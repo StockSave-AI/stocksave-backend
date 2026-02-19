@@ -1,41 +1,37 @@
 const jwt = require('jsonwebtoken');
+const User = require('../models/userModel');
 
-// 1. Define 'authenticate' (Make sure the name is exactly this)
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ message: 'Unauthorized: No token provided' });
   }
 
   const token = authHeader.split(' ')[1];
-
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // Attach user info to request
+    
+    // Safety Check: Verify user still exists and is Active in DB
+    const user = await User.findById(decoded.id);
+    if (!user || user.status !== 'Active') {
+      return res.status(403).json({ message: 'Account is inactive or does not exist' });
+    }
+
+    req.user = decoded; 
     next();
   } catch (error) {
-    return res.status(401).json({ message: 'Unauthorized: Invalid token' });
+    return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
 
-// 2. Define 'authorize'
 const authorize = (roles) => {
   return (req, res, next) => {
-    // Note: ensure your JWT payload uses 'account_type'
+    // roles is an array like ['Owner'] or ['Customer', 'Owner']
     if (!roles.includes(req.user.account_type)) {
-      return res.status(403).json({
-        message: 'Forbidden: You do not have access to this resource'
-      });
+      return res.status(403).json({ message: 'Forbidden: Insufficient permissions' });
     }
     next();
   };
 };
 
-// 3. Export them (Names must match the 'const' names above)
-module.exports = {
-  authenticate,
-  authorize
-};
-
-
+module.exports = { authenticate, authorize };

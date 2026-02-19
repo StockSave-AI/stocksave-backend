@@ -1,49 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const authController = require('../controllers/authController');
 const savingsController = require('../controllers/savingsController');
-const { authenticate } = require('../middleware/authMiddleware'); // Import this!
-
-/**
- * @swagger
- * components:
- *   schemas:
- *     DepositRequest:
- *       type: object
- *       required: [user_id, amount, method, reference]
- *       properties:
- *         user_id: { type: integer, example: 1 }
- *         amount: { type: number, example: 500.50 }
- *         method: { type: string, enum: ['Cash', 'Paystack', 'Transfer'], example: "Cash" }
- *         reference: { type: string, example: "REF-123456" }
- */
-
-/**
- * @swagger
- * /api/savings/deposit:
- *   post:
- *     summary: Add savings to user account
- *     tags: [Savings]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/DepositRequest'
- *     responses:
- *       200:
- *         description: Savings updated successfully
- *       400:
- *         description: Missing fields or invalid data
- */
+const { authenticate, authorize } = require('../middleware/authMiddleware');
 
 /**
  * @swagger
  * /api/savings/history/{userId}:
  *   get:
- *     summary: Get transaction history for a user
+ *     summary: Get full deposit history for a user
+ *     description: Customers can only see their own history. Owners can see any user's history.
  *     tags: [Savings]
  *     security:
  *       - bearerAuth: []
@@ -55,13 +20,52 @@ const { authenticate } = require('../middleware/authMiddleware'); // Import this
  *           type: integer
  *     responses:
  *       200:
- *         description: List of transactions retrieved
+ *         description: Array of transaction objects
+ *       403:
+ *         description: Unauthorized to view this user's history
  */
 
+/**
+ * @swagger
+ * /api/savings/recent:
+ *   get:
+ *     summary: Get the 5 most recent deposits
+ *     description: Returns the latest 5 transactions. Owners see system-wide; Customers see their own.
+ *     tags: [Savings]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of the 5 most recent transactions
+ */
 
-// Use authenticate to protect these routes
-router.post('/deposit', authenticate, savingsController.addSavings); 
-router.get('/history/:userId', authenticate, authController.getAccountSummary);
+/**
+ * @swagger
+ * /api/savings/verify:
+ *   get:
+ *     summary: Verify a Paystack transaction
+ *     description: Confirms payment status with Paystack and updates user balance.
+ *     tags: [Savings]
+ *     parameters:
+ *       - in: query
+ *         name: reference
+ *         required: true
+ *         description: The Paystack transaction reference
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Payment successfully verified and credited
+ *       400:
+ *         description: Invalid reference or payment failed
+ */
 
+router.post('/deposit', authenticate, authorize(['Customer']), savingsController.addSavings);
+router.get('/history/:userId', authenticate, savingsController.getSavingsHistory);
+router.get('/recent', authenticate, savingsController.getRecentDeposits);
+router.get('/verify', savingsController.verifyPaystackPayment);
+router.patch('/update-status', authenticate, authorize(['Owner']), savingsController.updateDepositStatus);
 
 module.exports = router;
+
+

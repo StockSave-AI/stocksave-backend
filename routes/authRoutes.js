@@ -69,30 +69,6 @@ router.post('/login', authController.login);
 
 /**
  * @swagger
- * /api/auth/profile:
- *   get:
- *     summary: Get current user profile and account summary
- *     tags: [Auth]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Profile data retrieved
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 first_name: { type: string }
- *                 last_name: { type: string }
- *                 balance: { type: number }
- *                 account_type: { type: string }
- *                 created_at: { type: string }
- */
-router.get('/profile', authenticate, authController.getAccountSummary);
-
-/**
- * @swagger
  * /api/auth/forgot-password:
  *   post:
  *     summary: Request password reset OTP via SMS

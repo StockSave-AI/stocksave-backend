@@ -1,28 +1,26 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const axios = require('axios');
 const validator = require('validator');
 const User = require('../models/userModel');
 const { validatePassword } = require('../utils/validator');
-const termiiConfig = require('../configs/termii');
+const twilio = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 exports.signup = async (req, res) => {
   const { first_name, last_name, email, phone, password, account_type } = req.body;
   try {
     if (!validator.isEmail(email)) return res.status(400).json({ message: "Invalid email format" });
+    
     const passwordError = validatePassword(password);
     if (passwordError) return res.status(400).json({ message: passwordError });
 
     const existingUser = await User.findByEmail(email);
-    if (existingUser) return res.status(400).json({ message: "Email already registered" });
+    if (existingUser) return res.status(400).json({ message: "Email already registered or account inactive" });
 
-    const saltRounds = 12;
-    const password_hash = await bcrypt.hash(password, saltRounds);
+    const password_hash = await bcrypt.hash(password, 12);
+    await User.createUser({ first_name, last_name, email, phone, password_hash, account_type });
 
-    await User.createUser({first_name, last_name, email, phone, password_hash, account_type });
     res.status(201).json({ message: "Account created successfully" });
   } catch (error) {
-    console.error(error);
     res.status(500).json({ message: "Server error during signup" });
   }
 };
@@ -31,7 +29,7 @@ exports.login = async (req, res) => {
   const { email, password } = req.body;
   try {
     const user = await User.findByEmail(email);
-    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    if (!user) return res.status(400).json({ message: "Invalid credentials or account inactive" });
 
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(400).json({ message: "Invalid credentials" });
@@ -43,111 +41,69 @@ exports.login = async (req, res) => {
     );
     res.status(200).json({ message: "Login successful", token });
   } catch (error) {
-    console.error(error);
     res.status(500).json({ message: "Server error during login" });
   }
 };
 
-// --- REQUEST OTP ---
 exports.requestPasswordReset = async (req, res) => {
   const { phone } = req.body;
   try {
-    if (!phone) return res.status(400).json({ message: "Phone number is required" });
-    
     const user = await User.findByPhone(phone);
-    if (!user) return res.status(404).json({ status: 'error', message: 'User not found' });
+    if (!user) return res.status(404).json({ message: "Active user not found with this phone number" });
 
-    const payload = {
-      api_key: termiiConfig.apiKey,
-      message_type: "NUMERIC",
-      to: phone.replace('+', ''), 
-      from: termiiConfig.senderId,
-      channel: "dnd",
-      pin_attempts: 10,
-      pin_time_to_live: 5,
-      pin_length: 6,
-      pin_placeholder: "< 123456 >",
-      message_text: "Your StockSave reset code is < 123456 >",
-      pin_type: "NUMERIC"
-    };
+    await twilio.verify.v2.services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verifications.create({ to: phone, channel: 'sms' });
 
-    const response = await axios.post(`${termiiConfig.baseUrl}/api/sms/otp/send`, payload);
+    res.status(200).json({ status: 'success', message: 'OTP sent via Twilio' });
+  } catch (err) {
+    res.status(500).json({ message: 'Twilio failed to send SMS' });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  const { phone, otp, newPassword } = req.body;
+  try {
+    // 1. Validate new password strength
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) return res.status(400).json({ message: passwordError });
+
+    // 2. Verify OTP with Twilio
+    const check = await twilio.verify.v2.services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verificationChecks.create({ to: phone, code: otp });
+
+    if (check.status !== 'approved') return res.status(400).json({ message: 'Invalid or expired OTP' });
+
+    // 3. Update Password
+    const newPasswordHash = await bcrypt.hash(newPassword, 12);
+    await User.updatePassword(phone, newPasswordHash);
+
+    res.status(200).json({ status: 'success', message: 'Password updated!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Verification failed' });
+  }
+};
+
+/*exports.getAccountSummary = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     res.status(200).json({ 
       status: 'success', 
-      message: 'Reset OTP sent', 
-      pinId: response.data.pinId 
+      data: { ...user, active_plans: 1 } 
     });
   } catch (err) {
-    console.error("Termii Send Error:", err.response?.data || err.message);
-    res.status(500).json({ status: 'error', message: 'Failed to send OTP' });
+    res.status(500).json({ message: "Error fetching summary" });
   }
-};
-
-// --- VERIFY OTP AND RESET PASSWORD (ADDED BACK) ---
-exports.resetPassword = async (req, res) => {
-  const { phone, otp, pinId, newPassword } = req.body;
-  
-  try {
-    if (!phone || !otp || !pinId || !newPassword) {
-      return res.status(400).json({ message: "All fields (phone, otp, pinId, newPassword) are required" });
-    }
-
-    // 1. Verify with Termii
-    const verifyPayload = {
-      api_key: termiiConfig.apiKey,
-      pin_id: pinId,
-      pin: otp
-    };
-
-    const verification = await axios.post(`${termiiConfig.baseUrl}/api/sms/otp/verify`, verifyPayload);
-
-    // Termii returns verified as boolean or string "True"
-    if (!verification.data.verified || verification.data.verified.toString().toLowerCase() !== 'true') {
-      return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
-    }
-
-    // 2. Hash New Password and Update DB
-    const saltRounds = 12;
-    const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
-
-    await User.updatePassword(phone, newPasswordHash);
-    
-    res.status(200).json({ status: 'success', message: 'Password updated successfully' });
-  } catch (err) {
-    console.error("Verification Error:", err.response?.data || err.message);
-    res.status(500).json({ status: 'error', message: 'Reset failed' });
-  }
-};
-
-exports.getAccountSummary = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const user = await User.findById(userId);
-        if (!user) return res.status(404).json({ message: "User not found" });
-
-        res.status(200).json({
-            status: 'success',
-            data: {
-                first_name: user.first_name,
-                last_name: user.last_name,
-                balance: user.balance,
-                account_type: user.account_type,
-                member_since: user.created_at,
-                active_plans: 1, 
-            }
-        });
-    } catch (err) {
-        res.status(500).json({ message: "Error fetching summary" });
-    }
-};
+};*/
 
 exports.deleteAccount = async (req, res) => {
   try {
-    const userId = req.user.id; 
-    await User.deleteById(userId);
-    res.status(200).json({ status: 'success', message: 'Account deleted successfully' });
+    const [result] = await User.deactivate(req.user.id);
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'User not found' });
+
+    res.status(200).json({ message: 'Account deactivated successfully' });
   } catch (err) {
-    res.status(500).json({ status: 'error', message: 'Deletion failed' });
+    res.status(500).json({ message: 'Deactivation failed' });
   }
 };

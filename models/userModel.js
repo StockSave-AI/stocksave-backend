@@ -1,44 +1,45 @@
 const db = require('../configs/connect');
 
 const User = {
-  // FIND BY EMAIL: Used for Login
+  // Only find users who are currently 'Active'
   findByEmail: async (email) => {
-    const [rows] = await db.execute("SELECT * FROM users WHERE email = ?", [email]);
+    const [rows] = await db.execute(
+      "SELECT * FROM users WHERE email = ? AND status = 'Active'", 
+      [email]
+    );
     return rows[0];
   },
 
-  // FIND BY PHONE: Used for OTP/Password Reset
+  // Only find users who are currently 'Active'
   findByPhone: async (phone) => {
-    const [rows] = await db.execute("SELECT * FROM users WHERE phone = ?", [phone]);
-    return rows[0]; // Simplified to return the single user object
+    const [rows] = await db.execute(
+      "SELECT * FROM users WHERE phone = ? AND status = 'Active'", 
+      [phone]
+    );
+    return rows[0];
   },
 
-  // NEW - FIND BY ID: Used for the Profile Summary (/profile)
-  
   findById: async (id) => {
     const [rows] = await db.execute(
-      "SELECT id, first_name, last_name, email, phone, account_type, balance, created_at FROM users WHERE id = ?", 
+      "SELECT id, first_name, last_name, email, phone, account_type, balance, created_at, status FROM users WHERE id = ?", 
       [id]
     );
     return rows[0];
   },
 
-  // CREATE USER: Including balance (defaults to 0.00)
   createUser: async (data) => {
     const query = `
       INSERT INTO users 
-      (first_name, last_name, email, phone, password_hash, account_type, balance)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (first_name, last_name, email, phone, password_hash, account_type, balance, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Active')
     `;
     const [result] = await db.execute(query, [
       data.first_name, data.last_name, data.email, data.phone, data.password_hash,
-      data.account_type, 
-      data.balance || 0.00
+      data.account_type, data.balance || 0.00
     ]);
     return { id: result.insertId, ...data };
   },
 
-  // UPDATE PASSWORD
   updatePassword: async (phone, newPasswordHash) => {
     return await db.execute(
       "UPDATE users SET password_hash = ? WHERE phone = ?",
@@ -46,9 +47,12 @@ const User = {
     );
   },
 
-  // DELETE ACCOUNT: Matches the "Deactivate Account" functionality
-  deleteById: async (id) => {
-    return await db.execute("DELETE FROM users WHERE id = ?", [id]);
+  // Soft Delete: Updates status instead of removing the row
+  deactivate: async (id) => {
+    return await db.execute(
+      "UPDATE users SET status = 'Deactivated' WHERE id = ?", 
+      [id]
+    );
   }
 };
 
