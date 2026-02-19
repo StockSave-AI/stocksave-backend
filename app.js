@@ -11,6 +11,7 @@ const savingsRoutes = require('./routes/savingRoute');
 const inventoryRoutes = require('./routes/inventory');
 const payoutRoutes = require('./routes/payoutRoute');
 const customerRoutes = require('./routes/customerRoutes');
+const ownerRoutes = require('./routes/ownerRoutes');
 
 const app = express();
 
@@ -76,6 +77,11 @@ const swaggerOptions = {
 
 // 2. Initialize Swagger Spec SECOND
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
+
+
+// ... other imports
+app.use('/api/owner', ownerRoutes);
+
 
 // Global Route Mapping
 app.use('/api/auth', authRoutes);
