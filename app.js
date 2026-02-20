@@ -12,6 +12,8 @@ const inventoryRoutes = require('./routes/inventory');
 const payoutRoutes = require('./routes/payoutRoute');
 const customerRoutes = require('./routes/customerRoutes');
 const ownerRoutes = require('./routes/ownerRoutes');
+const planRoutes = require('./routes/planRoutes');
+
 
 const app = express();
 
@@ -81,7 +83,7 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 // ... other imports
 app.use('/api/owner', ownerRoutes);
-
+app.use('/api/plans', planRoutes);
 
 // Global Route Mapping
 app.use('/api/auth', authRoutes);

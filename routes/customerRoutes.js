@@ -1,8 +1,13 @@
 const router = require('express').Router();
 const savings = require('../controllers/savingsController'); 
 const customer = require('../controllers/CustomerdashController');
+const plans= require('../controllers/planController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
 
+
+//  Paystack routes - NO auth middleware (Paystack calls these, not the user)
+router.post('/webhook', savings.handlePaystackWebhook);
+router.get('/verify', savings.verifyPaystackPayment);
 
 router.use(authenticate, authorize(['Customer']));
 
@@ -58,7 +63,7 @@ router.get('/verify', savings.verifyPaystackPayment);
 
 // --- SIDEBAR & ACTION ROUTES ---
 
-//router.get('/plans', customer.managePlans); 
+router.get('/plans', customer.managePlans); 
 //router.get('/stock-board', customer.getStockBoard); 
 //router.post('/book-food', customer.bookFoodItems); 
 //router.post('/withdraw', customer.redeemSavings); 
