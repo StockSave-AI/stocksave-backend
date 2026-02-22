@@ -1,152 +1,281 @@
 const express = require('express');
 const router = express.Router();
-const savingsController = require('../controllers/savingsController');
+const savings = require('../controllers/savingsController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
 
 /**
  * @swagger
  * tags:
  *   name: Savings
- *   description: Savings management and Paystack integrations
+ *   description: Deposits, withdrawals and Paystack integrations
  */
-
-// 1. PUBLIC ROUTES
 /**
  * @swagger
- * /savings/webhook:
+ * /api/savings/webhook:
  *   post:
- *     summary: Paystack Webhook listener
+ *     summary: Paystack webhook (no auth - Paystack calls this)
  *     tags: [Savings]
  *     responses:
  *       200:
- *         description: Webhook received successfully
+ *         description: Received
  */
-router.post('/webhook', savingsController.handlePaystackWebhook);
+router.post('/webhook', savings.handlePaystackWebhook);
 
 /**
  * @swagger
- * /savings/verify:
+ * /api/savings/verify:
  *   get:
- *     summary: Verify a Paystack transaction
+ *     summary: Verify Paystack payment and credit balance
  *     tags: [Savings]
  *     parameters:
  *       - in: query
  *         name: reference
  *         required: true
- *         schema: { type: string }
+ *         schema:
+ *           type: string
+ *           example: STK-1712345678
  *     responses:
  *       200:
- *         description: Payment verified
+ *         description: Payment verified, balance updated
+ *       400:
+ *         description: Payment failed or invalid reference
  */
-router.get('/verify', savingsController.verifyPaystackPayment);
+router.get('/verify', savings.verifyPaystackPayment);
 
-// 2. AUTHENTICATED ROUTES
 router.use(authenticate);
 
-// 3. OWNER ONLY ROUTES
+// ─── OWNER ONLY ────
 /**
  * @swagger
- * /savings/update-status:
+ * /api/savings/update-status:
  *   patch:
- *     summary: Update deposit status (Owner only)
+ *     summary: Manually approve or reject a transaction (Owner only)
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
+ *             required: [transactionId, status]
  *             properties:
- *               depositId: { type: string }
- *               status: { type: string, enum: [Pending, Completed, Failed] }
+ *               transactionId:
+ *                 type: integer
+ *                 example: 12
+ *               status:
+ *                 type: string
+ *                 enum: [Completed, Failed, Pending]
+ *                 example: Completed
  *     responses:
  *       200:
- *         description: Status updated
+ *         description: Status updated. If Completed, balance is credited automatically.
  *       403:
- *         description: Unauthorized - Owner role required
+ *         description: Owners only
  */
-router.patch('/update-status', authorize(['Owner']), savingsController.updateDepositStatus);
+router.patch('/update-status', authorize(['Owner']), savings.updateDepositStatus);
 
-// 4. CUSTOMER ONLY ROUTES
+/**
+ * @swagger
+ * /api/savings/generate-code:
+ *   patch:
+ *     summary: Generate 6-digit cash approval code for customer (Owner only)
+ *     description: >
+ *       Flow - Customer deposits cash → Owner generates code → Owner gives code to customer
+ *       → Customer calls /approve-cash to credit balance.
+ *     tags: [Savings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [transactionId]
+ *             properties:
+ *               transactionId:
+ *                 type: integer
+ *                 example: 12
+ *     responses:
+ *       200:
+ *         description: Returns approval_code to share with customer
+ *       403:
+ *         description: Owners only
+ *       404:
+ *         description: Pending cash transaction not found
+ */
+router.patch('/generate-code', authorize(['Owner']), savings.generateApprovalCode);
+
+
 router.use(authorize(['Customer']));
 
 /**
  * @swagger
- * /savings/deposit:
+ * /api/savings/deposit:
  *   post:
- *     summary: Add new savings deposit
+ *     summary: Initiate a deposit
+ *     description: >
+ *       Paystack returns payment_url - open in browser to pay.
+ *       Cash and Transfer create a Pending transaction for owner approval.
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [amount, method]
+ *             properties:
+ *               amount:
+ *                 type: number
+ *                 example: 5000
+ *               method:
+ *                 type: string
+ *                 enum: [Cash, Paystack, Transfer]
+ *               reference:
+ *                 type: string
+ *                 description: Optional custom reference
+ *                 example: RCPT-001
  *     responses:
+ *       200:
+ *         description: Paystack - returns payment_url and reference
  *       201:
- *         description: Deposit initiated
+ *         description: Cash/Transfer - recorded as Pending
+ *       400:
+ *         description: Invalid amount or method
  */
-router.post('/deposit', savingsController.addSavings);
+router.post('/deposit', savings.addSavings);
 
 /**
  * @swagger
- * /savings/history:
+ * /api/savings/history:
  *   get:
- *     summary: Get user savings history
+ *     summary: Get full transaction history
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of past transactions
+ *         description: All transactions sorted by most recent
  */
-router.get('/history', savingsController.getSavingsHistory);
+router.get('/history', savings.getSavingsHistory);
 
 /**
  * @swagger
- * /savings/recent:
+ * /api/savings/recent:
  *   get:
- *     summary: Get recent deposits
+ *     summary: Get last 5 transactions
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of recent activity
+ *         description: Last 5 transactions
  */
-router.get('/recent', savingsController.getRecentDeposits);
+router.get('/recent', savings.getRecentDeposits);
 
 /**
  * @swagger
- * /savings/redeem:
+ * /api/savings/redeem:
  *   get:
- *     summary: Get redemption screen details
+ *     summary: Load redeem screen - balance and recent withdrawals
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Redemption data retrieved
+ *         description: Returns available_balance and last 5 withdrawals
  */
-router.get('/redeem', savingsController.getRedeemScreen);
+router.get('/redeem', savings.getRedeemScreen);
 
 /**
  * @swagger
- * /savings/banks:
+ * /api/savings/banks:
  *   get:
- *     summary: Get list of supported banks
+ *     summary: Get Nigerian bank list from Paystack
+ *     description: Returns name and code for each bank. Use code in /withdraw.
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of banks
+ *         description: Array of { name, code } objects
  */
-router.get('/banks', savingsController.getBankList);
+router.get('/banks', savings.getBankList);
 
 /**
  * @swagger
- * /savings/withdraw:
+ * /api/savings/withdraw:
  *   post:
- *     summary: Submit a withdrawal request
+ *     summary: Withdraw savings via Paystack Transfer
+ *     description: Deducts balance immediately. Funds arrive in 2-5 business days.
  *     tags: [Savings]
- *     security: [{ bearerAuth: [] }]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [amount, account_name, account_number, bank_code]
+ *             properties:
+ *               amount:
+ *                 type: number
+ *                 example: 5000
+ *               account_name:
+ *                 type: string
+ *                 example: Tolu Akinyanju
+ *               account_number:
+ *                 type: string
+ *                 example: "0123456789"
+ *               bank_code:
+ *                 type: string
+ *                 description: From GET /api/savings/banks
+ *                 example: "044"
  *     responses:
  *       200:
- *         description: Withdrawal submitted
+ *         description: Withdrawal submitted, returns transfer_reference and new_balance
+ *       400:
+ *         description: Insufficient balance or missing fields
  */
-router.post('/withdraw', savingsController.submitWithdrawal);
+router.post('/withdraw', savings.submitWithdrawal);
+
+/**
+ * @swagger
+ * /api/savings/approve-cash:
+ *   post:
+ *     summary: Confirm cash deposit with owner-provided code
+ *     description: Enter the 6-digit code from owner to credit balance automatically.
+ *     tags: [Savings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [transactionId, approval_code]
+ *             properties:
+ *               transactionId:
+ *                 type: integer
+ *                 example: 12
+ *               approval_code:
+ *                 type: string
+ *                 example: "847291"
+ *     responses:
+ *       200:
+ *         description: Balance credited successfully
+ *       400:
+ *         description: Incorrect code or no code generated yet
+ *       404:
+ *         description: Pending cash transaction not found
+ */
+router.post('/approve-cash', savings.approveCashDeposit);
 
 module.exports = router;

@@ -3,6 +3,9 @@ const router = express.Router();
 const ownerController = require('../controllers/OwnerdashController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
 
+// All routes below require Owner access
+router.use(authenticate, authorize(['Owner']));
+
 /**
  * @swagger
  * tags:
@@ -22,8 +25,7 @@ const { authenticate, authorize } = require('../middleware/authMiddleware');
  */
 router.get('/stats', ownerController.getDashboardStats);
 
-// All routes below require Owner access
-router.use(authenticate, authorize(['Owner']));
+
 /**
  * @swagger
  * /search-users:

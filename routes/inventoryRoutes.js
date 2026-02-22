@@ -10,6 +10,35 @@ router.use(authenticate);
  *   name: Inventory
  *   description: Stock board and food booking
  */
+/**
+ * @openapi
+ * /api/inventory/products:
+ *   get:
+ *     summary: Get all products with images and variants
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get('/products', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        p.id, 
+        p.product_name, 
+        p.image_url, 
+        v.size_label, 
+        v.price, 
+        v.stock_quantity
+      FROM food_products p
+      LEFT JOIN product_variants v ON p.id = v.product_id
+      ORDER BY p.id;
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows); 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /**
  * @swagger
@@ -21,7 +50,9 @@ router.use(authenticate);
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Items, categories and low stock alerts
+ *         description: Success - returns items, categories, and low stock alerts
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
  */
 router.get('/', inventory.getStockBoard);
 
@@ -35,7 +66,7 @@ router.get('/', inventory.getStockBoard);
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Categories with nested products and variants
+ *         description: Success - Categories with nested products and variants
  */
 router.get('/categories', inventory.getCategories);
 
@@ -49,7 +80,9 @@ router.get('/categories', inventory.getCategories);
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: User bookings
+ *         description: List of current customer's bookings
+ *       403:
+ *         description: Forbidden - Only Customers can access this
  */
 router.get('/my-bookings', authorize(['Customer']), inventory.getMyBookings);
 
@@ -63,7 +96,9 @@ router.get('/my-bookings', authorize(['Customer']), inventory.getMyBookings);
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: All bookings with user details
+ *         description: List of all global bookings
+ *       403:
+ *         description: Forbidden - Only Owners can access this
  */
 router.get('/all-bookings', authorize(['Owner']), inventory.getAllBookings);
 
@@ -83,13 +118,21 @@ router.get('/all-bookings', authorize(['Owner']), inventory.getAllBookings);
  *             type: object
  *             required: [inventory_id, slots_booked]
  *             properties:
- *               inventory_id: { type: integer, example: 1 }
- *               slots_booked: { type: integer, example: 2 }
+ *               inventory_id:
+ *                 type: integer
+ *                 description: The ID of the inventory item
+ *                 example: 1
+ *               slots_booked:
+ *                 type: integer
+ *                 description: Number of slots to reserve
+ *                 example: 2
  *     responses:
  *       200:
  *         description: Booking successful
  *       400:
- *         description: Insufficient balance or slots
+ *         description: Insufficient balance or slots unavailable
+ *       403:
+ *         description: Forbidden - Only Customers can book
  */
 router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
 
@@ -109,11 +152,17 @@ router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
  *             type: object
  *             required: [product_variant_id, total_slots]
  *             properties:
- *               product_variant_id: { type: integer, example: 1 }
- *               total_slots: { type: integer, example: 100 }
+ *               product_variant_id:
+ *                 type: integer
+ *                 example: 1
+ *               total_slots:
+ *                 type: integer
+ *                 example: 100
  *     responses:
  *       201:
- *         description: Inventory added
+ *         description: Inventory added successfully
+ *       403:
+ *         description: Forbidden - Owner role required
  */
 router.post('/add', authorize(['Owner']), inventory.addInventory);
 
@@ -131,11 +180,12 @@ router.post('/add', authorize(['Owner']), inventory.addInventory);
  *         required: true
  *         schema:
  *           type: integer
+ *         description: Numeric ID of the inventory item
  *     responses:
  *       200:
- *         description: Item details
+ *         description: Item details retrieved
  *       404:
- *         description: Not found
+ *         description: Inventory item not found
  */
 router.get('/:id', inventory.getInventoryItem);
 

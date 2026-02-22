@@ -14,8 +14,6 @@ const customerRoutes = require('./routes/customerRoutes');
 const ownerRoutes = require('./routes/ownerRoutes');
 const planRoutes = require('./routes/planRoutes');
 
-
-
 const app = express();
 
 // Middleware
@@ -80,7 +78,6 @@ const swaggerOptions = {
 
 // 2. Initialize Swagger Spec SECOND
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
-
 
 // ... other imports
 app.use('/api/owner', ownerRoutes);
