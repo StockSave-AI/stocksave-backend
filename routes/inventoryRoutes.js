@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const inventory = require('../controllers/inventoryController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
+const pool = require('../config/db');
 
 router.use(authenticate);
 
