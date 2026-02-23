@@ -13,7 +13,7 @@ exports.getCustomerDashboard = async (req, res) => {
 
     // 2. GET ACTIVE PAYMENT PLAN - full data from payment_plans table
     const [plan] = await db.execute(
-      `SELECT id, plan_type, amount, next_payment_date, duration_months,
+      `SELECT id, plan_type, amount, next_payment_date, duration,
               payments_made, payments_missed, target_amount, start_date, end_date
        FROM payment_plans 
        WHERE user_id = ? AND status = 'Active' 
@@ -39,11 +39,11 @@ exports.getCustomerDashboard = async (req, res) => {
     // Monthly progress - based on plan amount if plan exists
     const monthlyGoal = activePlan ? parseFloat(activePlan.amount) * 12 : 20000;
     const annualGoal = activePlan
-      ? parseFloat(activePlan.target_amount) || parseFloat(activePlan.amount) * activePlan.duration_months
+      ? parseFloat(activePlan.target_amount) || parseFloat(activePlan.amount) * activePlan.duration
       : 240000;
 
     // Plan progress stats
-    const totalPayments = activePlan?.duration_months || 0;
+    const totalPayments = activePlan?.duration || 0;
     const paymentsMade = activePlan?.payments_made || 0;
     const paymentsMissed = activePlan?.payments_missed || 0;
     const paymentsRemaining = totalPayments - paymentsMade;
