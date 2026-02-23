@@ -209,110 +209,13 @@ exports.handlePaystackWebhook = async (req, res) => {
     res.sendStatus(200);
 };
 
-const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-// PATCH /api/savings/generate-code (Owner only)
-// Owner calls this after receiving cash - generates a code to give the customer
-exports.generateApprovalCode = async (req, res) => {
-  const { transactionId } = req.body;
-
-  if (req.user.account_type !== 'Owner') {
-    return res.status(403).json({ message: 'Owners only' });
-  }
-
+exports.getBalance = async (req, res) => {
   try {
     const [rows] = await db.execute(
-      "SELECT * FROM transactions WHERE id = ? AND method = 'Cash' AND status = 'Pending'",
-      [transactionId]
+      'SELECT balance FROM users WHERE id = ?', [req.user.id]
     );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: 'Pending cash transaction not found' });
-    }
-
-    const code = generateCode();
-
-    await db.execute(
-      'UPDATE transactions SET approval_code = ? WHERE id = ?',
-      [code, transactionId]
-    );
-
-    // In production - send this code to customer via SMS/Twilio
-    // await twilio.messages.create({ to: customerPhone, body: `Your StockSave approval code: ${code}` });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Approval code generated. Share this code with the customer.',
-      data: { transaction_id: transactionId, approval_code: code }
-    });
+    res.json({ status: 'success', balance: parseFloat(rows[0].balance) || 0 });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// POST /api/savings/approve-cash (Customer enters code)
-// Customer enters the code they received - balance updates automatically
-exports.approveCashDeposit = async (req, res) => {
-  const { transactionId, approval_code } = req.body;
-  const userId = req.user.id;
-
-  if (!transactionId || !approval_code) {
-    return res.status(400).json({ message: 'transactionId and approval_code are required' });
-  }
-
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    const [rows] = await connection.execute(
-      `SELECT * FROM transactions 
-       WHERE id = ? AND user_id = ? AND method = 'Cash' AND status = 'Pending'
-       FOR UPDATE`,
-      [transactionId, userId]
-    );
-
-    if (rows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ message: 'Pending cash transaction not found' });
-    }
-
-    const transaction = rows[0];
-
-    if (!transaction.approval_code) {
-      await connection.rollback();
-      return res.status(400).json({ message: 'No approval code has been generated for this transaction yet' });
-    }
-
-    if (transaction.approval_code !== approval_code.toString()) {
-      await connection.rollback();
-      return res.status(400).json({ message: 'Incorrect approval code' });
-    }
-
-    // Code matches - approve the deposit
-    await connection.execute(
-      "UPDATE transactions SET status = 'Completed', approval_code = NULL WHERE id = ?",
-      [transactionId]
-    );
-
-    await connection.execute(
-      'UPDATE users SET balance = balance + ? WHERE id = ?',
-      [transaction.amount, userId]
-    );
-
-    await connection.commit();
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Cash deposit approved. Balance has been updated.',
-      data: {
-        amount: transaction.amount,
-        transaction_id: transactionId
-      }
-    });
-  } catch (error) {
-    await connection.rollback();
-    res.status(500).json({ status: 'error', message: error.message });
-  } finally {
-    connection.release();
   }
 };

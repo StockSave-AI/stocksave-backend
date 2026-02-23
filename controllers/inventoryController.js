@@ -8,6 +8,7 @@ exports.getStockBoard = async (req, res) => {
         si.id AS inventory_id,
         fc.category_name,
         fp.product_name,
+        fp.image_url,
         pv.size_label,
         pv.price,
         si.total_slots,
@@ -22,7 +23,6 @@ exports.getStockBoard = async (req, res) => {
        ORDER BY fc.category_name, fp.product_name`
     );
 
-    // Low stock alerts
     const [alerts] = await db.execute(
       `SELECT fp.product_name, pv.size_label, si.slots_remaining
        FROM shared_inventory si
@@ -48,7 +48,7 @@ exports.getCategories = async (req, res) => {
     );
 
     const [products] = await db.execute(
-      `SELECT fp.id, fp.category_id, fp.product_name,
+      `SELECT fp.id, fp.category_id, fp.product_name, fp.image_url,
               pv.id AS variant_id, pv.size_label, pv.price, pv.stock_quantity
        FROM food_products fp
        LEFT JOIN product_variants pv ON fp.id = pv.product_id
@@ -72,6 +72,7 @@ exports.getCategories = async (req, res) => {
             acc.push({
               id: p.id,
               product_name: p.product_name,
+              image_url: p.image_url,
               variants: p.variant_id ? [{
                 variant_id: p.variant_id,
                 size_label: p.size_label,
@@ -96,7 +97,7 @@ exports.getInventoryItem = async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT si.*, pv.size_label, pv.price,
-              fp.product_name, fc.category_name
+              fp.product_name, fp.image_url, fc.category_name
        FROM shared_inventory si
        JOIN product_variants pv ON si.product_variant_id = pv.id
        JOIN food_products fp ON pv.product_id = fp.id
@@ -104,16 +105,14 @@ exports.getInventoryItem = async (req, res) => {
        WHERE si.id = ?`,
       [id]
     );
-    if (rows.length === 0) {
-      return res.status(404).json({ message: 'Item not found' });
-    }
+    if (rows.length === 0) return res.status(404).json({ message: 'Item not found' });
     res.status(200).json({ status: 'success', data: rows[0] });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// POST /api/inventory/book - Book food slots
+// POST /api/inventory/book - Book food slots with FIFO stock reduction
 exports.bookFoodItem = async (req, res) => {
   const userId = req.user.id;
   const { inventory_id, slots_booked } = req.body;
@@ -128,7 +127,7 @@ exports.bookFoodItem = async (req, res) => {
 
     // 1. Lock inventory row - prevent overbooking
     const [invRows] = await connection.execute(
-      `SELECT si.*, pv.price
+      `SELECT si.*, pv.price, pv.id AS variant_id
        FROM shared_inventory si
        JOIN product_variants pv ON si.product_variant_id = pv.id
        WHERE si.id = ? AND si.status = 'open'
@@ -150,47 +149,73 @@ exports.bookFoodItem = async (req, res) => {
     const user = userRows[0];
     const totalCost = slots_booked * item.price;
 
-    // 3. Validations
+    // 3. Validate slots and balance
     if (item.slots_remaining < slots_booked) {
       await connection.rollback();
-      return res.status(400).json({
-        message: `Only ${item.slots_remaining} slots available`
-      });
+      return res.status(400).json({ message: `Only ${item.slots_remaining} slots available` });
     }
-
-    if (user.balance < totalCost) {
+    if (parseFloat(user.balance) < totalCost) {
       await connection.rollback();
       return res.status(400).json({
         message: `Insufficient balance. Need ₦${totalCost}, have ₦${user.balance}`
       });
     }
 
-    // 4. Deduct slots
+    // 4. FIFO - check enough stock exists across all batches
+    const [stockBatches] = await connection.execute(
+      `SELECT id, quantity_remaining
+       FROM stock_entries
+       WHERE product_variant_id = ? AND quantity_remaining > 0
+       ORDER BY date_added ASC`,
+      [item.variant_id]
+    );
+
+    const totalFifoStock = stockBatches.reduce((sum, b) => sum + b.quantity_remaining, 0);
+    if (totalFifoStock < slots_booked) {
+      await connection.rollback();
+      return res.status(400).json({ message: 'Not enough physical stock available' });
+    }
+
+    // 5. FIFO - deduct from oldest batches first
+    let remaining = slots_booked;
+    for (const batch of stockBatches) {
+      if (remaining <= 0) break;
+      const deduct = Math.min(batch.quantity_remaining, remaining);
+      await connection.execute(
+        `UPDATE stock_entries
+         SET quantity_remaining = quantity_remaining - ?
+         WHERE id = ?`,
+        [deduct, batch.id]
+      );
+      remaining -= deduct;
+    }
+
+    // 6. Deduct slots from shared_inventory
     await connection.execute(
       'UPDATE shared_inventory SET slots_remaining = slots_remaining - ? WHERE id = ?',
       [slots_booked, inventory_id]
     );
 
-    // 5. Mark completed if fully booked
+    // 7. Mark inventory as completed if fully booked
     await connection.execute(
       `UPDATE shared_inventory SET status = 'completed'
        WHERE id = ? AND slots_remaining = 0`,
       [inventory_id]
     );
 
-    // 6. Deduct balance
+    // 8. Deduct user balance
     await connection.execute(
       'UPDATE users SET balance = balance - ? WHERE id = ?',
       [totalCost, userId]
     );
 
-    // 7. Record booking
+    // 9. Record booking in inventory_allocations
     await connection.execute(
       'INSERT INTO inventory_allocations (user_id, shared_inventory_id, slots_booked) VALUES (?, ?, ?)',
       [userId, inventory_id, slots_booked]
     );
 
-    // 8. Record transaction
+    // 10. Record transaction
     await connection.execute(
       `INSERT INTO transactions (user_id, amount, type, method, status)
        VALUES (?, ?, 'Booking_Hold', 'Paystack', 'Completed')`,
@@ -202,7 +227,11 @@ exports.bookFoodItem = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Slot booked successfully',
-      data: { slots_booked, total_cost: totalCost }
+      data: {
+        slots_booked,
+        total_cost: totalCost,
+        stock_batches_used: slots_booked - remaining
+      }
     });
   } catch (error) {
     await connection.rollback();
@@ -219,7 +248,7 @@ exports.getMyBookings = async (req, res) => {
     const [bookings] = await db.execute(
       `SELECT 
         ia.id, ia.slots_booked, ia.created_at,
-        fp.product_name, pv.size_label, pv.price,
+        fp.product_name, fp.image_url, pv.size_label, pv.price,
         fc.category_name,
         (ia.slots_booked * pv.price) AS total_cost
        FROM inventory_allocations ia
@@ -267,50 +296,70 @@ exports.addInventory = async (req, res) => {
     return res.status(400).json({ message: 'product_variant_id and total_slots are required' });
   }
 
+  const connection = await db.getConnection();
   try {
-    const [result] = await db.execute(
+    await connection.beginTransaction();
+
+    // Add to shared inventory pool
+    const [result] = await connection.execute(
       `INSERT INTO shared_inventory (product_variant_id, total_slots, slots_remaining)
        VALUES (?, ?, ?)`,
       [product_variant_id, total_slots, total_slots]
     );
 
-    // FIFO tracking
-    await db.execute(
+    // Create FIFO stock entry batch
+    await connection.execute(
       `INSERT INTO stock_entries (product_variant_id, quantity_added, quantity_remaining)
        VALUES (?, ?, ?)`,
       [product_variant_id, total_slots, total_slots]
     );
 
+    await connection.commit();
+
     res.status(201).json({
       status: 'success',
       message: 'Inventory added',
-      data: { inventory_id: result.insertId, total_slots }
+      data: {
+        inventory_id: result.insertId,
+        product_variant_id,
+        total_slots,
+        note: 'Stock entry created for FIFO tracking'
+      }
     });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ status: 'error', message: error.message });
+  } finally {
+    connection.release();
   }
 };
 
-// Add this to controllers/inventoryController.js
-exports.getAllProductsWithImages = async (req, res) => {
+// GET /api/inventory/stock-batches/:variantId - Owner: view FIFO batches
+exports.getStockBatches = async (req, res) => {
+  const { variantId } = req.params;
   try {
-    const query = `
-      SELECT 
-        p.id, 
-        p.product_name, 
-        p.image_url, 
-        v.size_label, 
-        v.price, 
-        v.stock_quantity
-      FROM food_products p
-      LEFT JOIN product_variants v ON p.id = v.product_id
-      ORDER BY p.id;
-    `;
-    // Use whatever the database variable name is in this file (e.g., pool or db)
-    const result = await pool.query(query); 
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Error fetching products:", err.message);
-    res.status(500).json({ error: err.message });
+    const [batches] = await db.execute(
+      `SELECT se.id, se.quantity_added, se.quantity_remaining, se.date_added,
+              fp.product_name, pv.size_label
+       FROM stock_entries se
+       JOIN product_variants pv ON se.product_variant_id = pv.id
+       JOIN food_products fp ON pv.product_id = fp.id
+       WHERE se.product_variant_id = ?
+       ORDER BY se.date_added ASC`,
+      [variantId]
+    );
+
+    const totalRemaining = batches.reduce((sum, b) => sum + b.quantity_remaining, 0);
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        total_remaining: totalRemaining,
+        batch_count: batches.length,
+        batches
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };

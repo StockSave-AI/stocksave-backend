@@ -76,39 +76,6 @@ router.use(authenticate);
  */
 router.patch('/update-status', authorize(['Owner']), savings.updateDepositStatus);
 
-/**
- * @swagger
- * /api/savings/generate-code:
- *   patch:
- *     summary: Generate 6-digit cash approval code for customer (Owner only)
- *     description: >
- *       Flow - Customer deposits cash → Owner generates code → Owner gives code to customer
- *       → Customer calls /approve-cash to credit balance.
- *     tags: [Savings]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [transactionId]
- *             properties:
- *               transactionId:
- *                 type: integer
- *                 example: 12
- *     responses:
- *       200:
- *         description: Returns approval_code to share with customer
- *       403:
- *         description: Owners only
- *       404:
- *         description: Pending cash transaction not found
- */
-router.patch('/generate-code', authorize(['Owner']), savings.generateApprovalCode);
-
-
 router.use(authorize(['Customer']));
 
 /**
@@ -247,35 +214,25 @@ router.post('/withdraw', savings.submitWithdrawal);
 
 /**
  * @swagger
- * /api/savings/approve-cash:
- *   post:
- *     summary: Confirm cash deposit with owner-provided code
- *     description: Enter the 6-digit code from owner to credit balance automatically.
+ * /api/savings/balance:
+ *   get:
+ *     summary: Get user balance
  *     tags: [Savings]
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [transactionId, approval_code]
- *             properties:
- *               transactionId:
- *                 type: integer
- *                 example: 12
- *               approval_code:
- *                 type: string
- *                 example: "847291"
  *     responses:
  *       200:
- *         description: Balance credited successfully
- *       400:
- *         description: Incorrect code or no code generated yet
- *       404:
- *         description: Pending cash transaction not found
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status: { type: string, example: success }
+ *                 balance: { type: number, example: 5000.00 }
+ *       401:
+ *         description: Unauthorized
  */
-router.post('/approve-cash', savings.approveCashDeposit);
+router.get('/balance', savings.getBalance);
 
 module.exports = router;

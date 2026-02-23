@@ -2,39 +2,28 @@ const router = require('express').Router();
 const inventory = require('../controllers/inventoryController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
 
-
-router.use(authenticate);
-
 /**
  * @swagger
  * tags:
  *   name: Inventory
- *   description: Stock board and food booking
+ *   description: Stock board, food booking and FIFO batch tracking
  */
-/**
- * @openapi
- * /api/inventory/products:
- *   get:
- *     summary: Get all products with images and variants
- *     responses:
- *       200:
- *         description: Success
- */
-router.get('/products', inventory.getAllProductsWithImages);
+
+router.use(authenticate);
+
+// ─── CUSTOMER & OWNER ─────────────────────────────────────
 
 /**
  * @swagger
  * /api/inventory:
  *   get:
- *     summary: Get stock board - all available food items
+ *     summary: Get full stock board with low stock alerts
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Success - returns items, categories, and low stock alerts
- *       401:
- *         description: Unauthorized - Invalid or missing token
+ *         description: Items, categories, images and low stock alerts
  */
 router.get('/', inventory.getStockBoard);
 
@@ -42,13 +31,13 @@ router.get('/', inventory.getStockBoard);
  * @swagger
  * /api/inventory/categories:
  *   get:
- *     summary: Get food categories and products for dropdown
+ *     summary: Get food categories with nested products and variants for dropdown
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Success - Categories with nested products and variants
+ *         description: Categories → Products → Variants with image_url
  */
 router.get('/categories', inventory.getCategories);
 
@@ -56,15 +45,13 @@ router.get('/categories', inventory.getCategories);
  * @swagger
  * /api/inventory/my-bookings:
  *   get:
- *     summary: Get current user booking history
+ *     summary: Get logged-in customer's booking history
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of current customer's bookings
- *       403:
- *         description: Forbidden - Only Customers can access this
+ *         description: Customer bookings with product and cost details
  */
 router.get('/my-bookings', authorize(['Customer']), inventory.getMyBookings);
 
@@ -72,23 +59,73 @@ router.get('/my-bookings', authorize(['Customer']), inventory.getMyBookings);
  * @swagger
  * /api/inventory/all-bookings:
  *   get:
- *     summary: Get all bookings across all users (Owner only)
+ *     summary: Get all bookings across all customers (Owner only)
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of all global bookings
- *       403:
- *         description: Forbidden - Only Owners can access this
+ *         description: All bookings with customer details
  */
 router.get('/all-bookings', authorize(['Owner']), inventory.getAllBookings);
 
 /**
  * @swagger
+ * /api/inventory/stock-batches/{variantId}:
+ *   get:
+ *     summary: View FIFO stock batches for a product variant (Owner only)
+ *     description: >
+ *       Returns all stock_entries for a variant ordered oldest first (FIFO order).
+ *       Shows how much stock remains in each batch.
+ *       Useful for the owner to track which batches are being consumed first.
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: variantId
+ *         required: true
+ *         description: product_variants.id
+ *         schema:
+ *           type: integer
+ *           example: 1
+ *     responses:
+ *       200:
+ *         description: FIFO batch list with total remaining
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status: { type: string, example: success }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total_remaining: { type: integer, example: 75 }
+ *                     batch_count: { type: integer, example: 3 }
+ *                     batches:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id: { type: integer }
+ *                           quantity_added: { type: integer }
+ *                           quantity_remaining: { type: integer }
+ *                           date_added: { type: string, format: date-time }
+ *                           product_name: { type: string }
+ *                           size_label: { type: string }
+ */
+router.get('/stock-batches/:variantId', authorize(['Owner']), inventory.getStockBatches);
+
+/**
+ * @swagger
  * /api/inventory/book:
  *   post:
- *     summary: Book food slots using savings balance
+ *     summary: Book food slots using savings balance (FIFO stock deduction)
+ *     description: >
+ *       Books slots and deducts from the oldest stock batch first (FIFO).
+ *       If the oldest batch doesn't have enough, it moves to the next batch automatically.
+ *       Balance is deducted immediately. Inventory closes when fully booked.
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
@@ -100,21 +137,15 @@ router.get('/all-bookings', authorize(['Owner']), inventory.getAllBookings);
  *             type: object
  *             required: [inventory_id, slots_booked]
  *             properties:
- *               inventory_id:
- *                 type: integer
- *                 description: The ID of the inventory item
- *                 example: 1
- *               slots_booked:
- *                 type: integer
- *                 description: Number of slots to reserve
- *                 example: 2
+ *               inventory_id: { type: integer, example: 1 }
+ *               slots_booked: { type: integer, example: 2 }
  *     responses:
  *       200:
- *         description: Booking successful
+ *         description: Booked successfully
  *       400:
- *         description: Insufficient balance or slots unavailable
- *       403:
- *         description: Forbidden - Only Customers can book
+ *         description: Insufficient balance, slots or physical stock
+ *       404:
+ *         description: Inventory not found or closed
  */
 router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
 
@@ -123,6 +154,10 @@ router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
  * /api/inventory/add:
  *   post:
  *     summary: Add new inventory stock (Owner only)
+ *     description: >
+ *       Creates a shared_inventory record and a stock_entries batch for FIFO tracking.
+ *       Each call creates one new batch. Multiple calls for the same product_variant_id
+ *       create separate batches consumed oldest-first during booking.
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
@@ -136,15 +171,17 @@ router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
  *             properties:
  *               product_variant_id:
  *                 type: integer
+ *                 description: ID from product_variants. Use GET /api/inventory/categories to find valid IDs.
  *                 example: 1
  *               total_slots:
  *                 type: integer
+ *                 description: Number of slots to make available for booking
  *                 example: 100
  *     responses:
  *       201:
- *         description: Inventory added successfully
- *       403:
- *         description: Forbidden - Owner role required
+ *         description: Inventory and FIFO batch created
+ *       400:
+ *         description: Missing fields
  */
 router.post('/add', authorize(['Owner']), inventory.addInventory);
 
@@ -160,14 +197,12 @@ router.post('/add', authorize(['Owner']), inventory.addInventory);
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: integer
- *         description: Numeric ID of the inventory item
+ *         schema: { type: integer, example: 1 }
  *     responses:
  *       200:
- *         description: Item details retrieved
+ *         description: Item details with product name, image, price and slots
  *       404:
- *         description: Inventory item not found
+ *         description: Not found
  */
 router.get('/:id', inventory.getInventoryItem);
 
