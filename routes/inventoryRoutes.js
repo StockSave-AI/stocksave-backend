@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const inventory = require('../controllers/inventoryController');
 const { authenticate, authorize } = require('../middleware/authMiddleware');
-const pool = require('../config/db');
+
 
 router.use(authenticate);
 
@@ -20,26 +20,7 @@ router.use(authenticate);
  *       200:
  *         description: Success
  */
-router.get('/products', async (req, res) => {
-  try {
-    const query = `
-      SELECT 
-        p.id, 
-        p.product_name, 
-        p.image_url, 
-        v.size_label, 
-        v.price, 
-        v.stock_quantity
-      FROM food_products p
-      LEFT JOIN product_variants v ON p.id = v.product_id
-      ORDER BY p.id;
-    `;
-    const result = await pool.query(query);
-    res.json(result.rows); 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+router.get('/products', inventory.getAllProductsWithImages);
 
 /**
  * @swagger

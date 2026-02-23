@@ -290,3 +290,27 @@ exports.addInventory = async (req, res) => {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
+
+// Add this to controllers/inventoryController.js
+exports.getAllProductsWithImages = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        p.id, 
+        p.product_name, 
+        p.image_url, 
+        v.size_label, 
+        v.price, 
+        v.stock_quantity
+      FROM food_products p
+      LEFT JOIN product_variants v ON p.id = v.product_id
+      ORDER BY p.id;
+    `;
+    // Use whatever the database variable name is in this file (e.g., pool or db)
+    const result = await pool.query(query); 
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching products:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
