@@ -225,6 +225,46 @@ exports.recordCashDeposit = async (req, res) => {
   }
 };
 
+// PATCH /api/owner/complete-withdrawal
+exports.completeWithdrawal = async (req, res) => {
+  const { transactionId } = req.body;
+  if (!transactionId) {
+    return res.status(400).json({ message: 'transactionId is required' });
+  }
+  try {
+    const [result] = await db.execute(
+      `UPDATE transactions SET status = 'Completed'
+       WHERE id = ? AND type = 'Withdrawal' AND status IN ('Pending', 'Processing')`,
+      [transactionId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Withdrawal not found or already completed' });
+    }
+    res.status(200).json({ status: 'success', message: 'Withdrawal marked as completed' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// GET /api/owner/withdrawals
+exports.getPendingWithdrawals = async (req, res) => {
+  const { status = 'Processing' } = req.query;
+  try {
+    const [rows] = await db.execute(
+      `SELECT t.id, t.amount, t.status, t.reference, t.created_at,
+              u.id AS user_id, u.first_name, u.last_name, u.email, u.phone
+       FROM transactions t
+       JOIN users u ON t.user_id = u.id
+       WHERE t.type = 'Withdrawal' AND t.status = ?
+       ORDER BY t.created_at DESC`,
+      [status]
+    );
+    res.status(200).json({ status: 'success', count: rows.length, data: rows });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
 // GET /api/owner/transactions
 exports.getAllTransactions = async (req, res) => {
   const { type, status, method, limit = 50 } = req.query;

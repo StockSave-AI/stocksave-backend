@@ -1,6 +1,5 @@
 const db = require('../configs/connect');
 
-// ─── GET /api/notifications/stock-match/:variantId ────────
 // DS4-1: Match user booking to available stock batches (FIFO order)
 exports.matchStockToBooking = async (req, res) => {
   const { variantId } = req.params;
@@ -140,9 +139,11 @@ exports.getReconciliation = async (req, res) => {
     const [[summary]] = await db.execute(
       `SELECT
         SUM(CASE WHEN type = 'Deposit'      AND status = 'Completed' THEN amount ELSE 0 END) AS total_deposits,
-        SUM(CASE WHEN type = 'Withdrawal'   AND status = 'Completed' THEN amount ELSE 0 END) AS total_withdrawals,
+        SUM(CASE WHEN type = 'Withdrawal'   AND status IN ('Completed', 'Processing') THEN amount ELSE 0 END) AS total_withdrawals,
         SUM(CASE WHEN type = 'Booking_Hold' AND status = 'Completed' THEN amount ELSE 0 END) AS total_booking_holds,
-        SUM(CASE WHEN status = 'Pending'                             THEN amount ELSE 0 END) AS total_pending
+        SUM(CASE WHEN status = 'Pending' AND type = 'Deposit'    THEN amount ELSE 0 END) AS total_pending_deposits,
+        SUM(CASE WHEN status = 'Pending' AND type = 'Withdrawal' THEN amount ELSE 0 END) AS total_pending_withdrawals,
+        SUM(CASE WHEN status = 'Pending'                         THEN amount ELSE 0 END) AS total_pending
        FROM transactions`
     );
 
@@ -155,6 +156,8 @@ exports.getReconciliation = async (req, res) => {
         total_withdrawals: parseFloat(summary.total_withdrawals) || 0,
         total_booking_holds: parseFloat(summary.total_booking_holds) || 0,
         total_pending: parseFloat(summary.total_pending) || 0,
+        total_pending_deposits: parseFloat(summary.total_pending_deposits) || 0,
+        total_pending_withdrawals: parseFloat(summary.total_pending_withdrawals) || 0,
         net_balance: parseFloat(netBalance) || 0,
         is_balanced: netBalance >= 0
       }

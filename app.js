@@ -6,10 +6,8 @@ const swaggerUi = require('swagger-ui-express');
 
 // Routes
 const authRoutes = require('./routes/authRoutes');
-const testRoutes = require('./routes/testRoute');
 const savingsRoutes = require('./routes/savingRoute');
 const inventoryRoutes = require('./routes/inventoryRoutes');
-const payoutRoutes = require('./routes/payoutRoute');
 const customerRoutes = require('./routes/customerRoutes');
 const ownerRoutes = require('./routes/ownerRoutes');
 const planRoutes = require('./routes/planRoutes');
@@ -87,8 +85,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/savings', savingsRoutes);
 app.use('/api/inventory', inventoryRoutes);
-app.use('/api/payouts', payoutRoutes);
-app.use('/api/test', testRoutes);
+
 app.use('/api/customer', customerRoutes);
 
 // Swagger UI Route
@@ -99,7 +96,6 @@ app.get('/', (req, res) => {
   res.redirect('/api-docs');
 });
 
-// Server Initialization
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
