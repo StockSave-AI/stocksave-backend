@@ -211,7 +211,8 @@ exports.bookFoodItem = async (req, res) => {
 
     // 9. Record booking in inventory_allocations
     await connection.execute(
-      'INSERT INTO inventory_allocations (user_id, shared_inventory_id, slots_booked) VALUES (?, ?, ?)',
+      `INSERT INTO inventory_allocations (user_id, shared_inventory_id, slots_booked, status)
+       VALUES (?, ?, ?, 'Pending')`,
       [userId, inventory_id, slots_booked]
     );
 
@@ -247,7 +248,7 @@ exports.getMyBookings = async (req, res) => {
   try {
     const [bookings] = await db.execute(
       `SELECT 
-        ia.id, ia.slots_booked, ia.created_at,
+        ia.id, ia.slots_booked, ia.status, ia.created_at,
         fp.product_name, fp.image_url, pv.size_label, pv.price,
         fc.category_name,
         (ia.slots_booked * pv.price) AS total_cost
@@ -268,23 +269,114 @@ exports.getMyBookings = async (req, res) => {
 
 // GET /api/inventory/all-bookings - Owner only
 exports.getAllBookings = async (req, res) => {
+  const { status } = req.query;
   try {
-    const [bookings] = await db.execute(
-      `SELECT 
-        ia.id, ia.slots_booked, ia.created_at,
-        u.first_name, u.last_name, u.email,
+    let query = `
+      SELECT 
+        ia.id, ia.slots_booked, ia.status, ia.created_at,
+        u.id AS user_id, u.first_name, u.last_name, u.email, u.phone,
         fp.product_name, pv.size_label, pv.price,
         (ia.slots_booked * pv.price) AS total_cost
        FROM inventory_allocations ia
        JOIN users u ON ia.user_id = u.id
        JOIN shared_inventory si ON ia.shared_inventory_id = si.id
        JOIN product_variants pv ON si.product_variant_id = pv.id
-       JOIN food_products fp ON pv.product_id = fp.id
-       ORDER BY ia.created_at DESC`
-    );
-    res.status(200).json({ status: 'success', data: bookings });
+       JOIN food_products fp ON pv.product_id = fp.id`;
+
+    const params = [];
+    if (status) {
+      query += ` WHERE ia.status = ?`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY ia.created_at DESC`;
+
+    const [bookings] = await db.execute(query, params);
+    res.status(200).json({ status: 'success', count: bookings.length, data: bookings });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// PATCH /api/inventory/booking/:id/status - Owner only
+exports.updateBookingStatus = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  const validStatuses = ['Pending', 'Completed', 'Cancelled'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ message: `status must be one of: ${validStatuses.join(', ')}` });
+  }
+
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [booking] = await connection.execute(
+      'SELECT * FROM inventory_allocations WHERE id = ? FOR UPDATE', [id]
+    );
+
+    if (booking.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    const current = booking[0];
+
+    // If cancelling - refund balance and restore slots
+    if (status === 'Cancelled' && current.status !== 'Cancelled') {
+      // Refund customer
+      const [invRows] = await connection.execute(
+        `SELECT pv.price FROM shared_inventory si
+         JOIN product_variants pv ON si.product_variant_id = pv.id
+         WHERE si.id = ?`,
+        [current.shared_inventory_id]
+      );
+
+      if (invRows.length > 0) {
+        const refundAmount = current.slots_booked * invRows[0].price;
+
+        // Refund balance
+        await connection.execute(
+          'UPDATE users SET balance = balance + ? WHERE id = ?',
+          [refundAmount, current.user_id]
+        );
+
+        // Restore slots to inventory
+        await connection.execute(
+          `UPDATE shared_inventory 
+           SET slots_remaining = slots_remaining + ?, status = 'open'
+           WHERE id = ?`,
+          [current.slots_booked, current.shared_inventory_id]
+        );
+
+        // Record refund transaction
+        await connection.execute(
+          `INSERT INTO transactions (user_id, amount, type, method, status)
+           VALUES (?, ?, 'Deposit', 'Paystack', 'Completed')`,
+          [current.user_id, refundAmount]
+        );
+      }
+    }
+
+    // Update booking status
+    await connection.execute(
+      'UPDATE inventory_allocations SET status = ? WHERE id = ?',
+      [status, id]
+    );
+
+    await connection.commit();
+
+    res.status(200).json({
+      status: 'success',
+      message: `Booking ${status.toLowerCase()}`,
+      data: { booking_id: parseInt(id), status }
+    });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ status: 'error', message: error.message });
+  } finally {
+    connection.release();
   }
 };
 

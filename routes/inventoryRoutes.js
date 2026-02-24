@@ -11,8 +11,6 @@ const { authenticate, authorize } = require('../middleware/authMiddleware');
 
 router.use(authenticate);
 
-// ─── CUSTOMER & OWNER ─────────────────────────────────────
-
 /**
  * @swagger
  * /api/inventory:
@@ -63,9 +61,14 @@ router.get('/my-bookings', authorize(['Customer']), inventory.getMyBookings);
  *     tags: [Inventory]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [Pending, Completed, Cancelled] }
+ *         description: Filter by booking status. Omit for all bookings.
  *     responses:
  *       200:
- *         description: All bookings with customer details
+ *         description: All bookings with customer details and status
  */
 router.get('/all-bookings', authorize(['Owner']), inventory.getAllBookings);
 
@@ -184,6 +187,41 @@ router.post('/book', authorize(['Customer']), inventory.bookFoodItem);
  *         description: Missing fields
  */
 router.post('/add', authorize(['Owner']), inventory.addInventory);
+
+/**
+ * @swagger
+ * /api/inventory/booking/{id}/status:
+ *   patch:
+ *     summary: Update booking status (Owner only)
+ *     description: >
+ *       Pending → Completed marks the booking fulfilled.
+ *       Pending → Cancelled refunds customer balance and restores inventory slots automatically.
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: integer }, description: booking id }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [status]
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [Pending, Completed, Cancelled]
+ *                 example: Completed
+ *     responses:
+ *       200:
+ *         description: Status updated. Cancelled bookings auto-refund balance and restore slots.
+ *       400:
+ *         description: Invalid status
+ *       404:
+ *         description: Booking not found
+ */
+router.patch('/booking/:id/status', authorize(['Owner']), inventory.updateBookingStatus);
 
 /**
  * @swagger
