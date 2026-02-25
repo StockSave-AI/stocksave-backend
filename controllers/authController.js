@@ -123,3 +123,37 @@ exports.deleteAccount = async (req, res) => {
     res.status(500).json({ message: 'Deactivation failed' });
   }
 };
+
+exports.updateSettings = async (req, res) => {
+  const { 
+    first_name, last_name, phone, profile_picture, 
+    business_name, business_phone, business_logo, business_description 
+  } = req.body;
+  const userId = req.user.id;
+
+  try {
+    // 1. Update Personal Profile in 'users' table
+    await db.execute(
+      `UPDATE users SET first_name = ?, last_name = ?, phone = ?, profile_picture = ? WHERE id = ?`,
+      [first_name, last_name, phone, profile_picture, userId]
+    );
+
+    // 2. Update Business Settings if the user is an 'Owner'
+    if (req.user.account_type === 'Owner') {
+      const businessQuery = `
+        INSERT INTO business_settings (user_id, business_name, business_phone, business_logo, business_description)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+          business_name = VALUES(business_name), 
+          business_phone = VALUES(business_phone), 
+          business_logo = VALUES(business_logo),
+          business_description = VALUES(business_description)`;
+      
+      await db.execute(businessQuery, [userId, business_name, business_phone, business_logo, business_description]);
+    }
+
+    res.status(200).json({ status: 'success', message: "Settings saved successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Update failed: " + error.message });
+  }
+};

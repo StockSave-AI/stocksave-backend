@@ -141,4 +141,24 @@ router.post('/reset-password', authController.resetPassword);
  */
 router.delete('/delete-account', authenticate, authorize(['Owner', 'Customer']), authController.deleteAccount);
 
+/**
+ * @swagger
+ * /api/auth/update-settings:
+ *   put:
+ *     summary: Update profile and business settings
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               first_name: { type: string }
+ *               profile_picture: { type: string, description: "Base64 string of the image" }
+ *               business_name: { type: string }
+ */
+router.put('/update-settings', authenticate, authController.updateSettings);
+
 module.exports = router;
