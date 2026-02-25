@@ -161,4 +161,31 @@ router.delete('/delete-account', authenticate, authorize(['Owner', 'Customer']),
  */
 router.put('/update-settings', authenticate, authController.updateSettings);
 
+
+/**
+ * @swagger
+ * /api/settings/change-password:
+ *   patch:
+ *     summary: Change password
+ *     tags: [Settings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [current_password, new_password]
+ *             properties:
+ *               current_password: { type: string, example: OldPass123! }
+ *               new_password:     { type: string, example: NewPass123! }
+ *     responses:
+ *       200:
+ *         description: Password changed
+ *       400:
+ *         description: Incorrect current password or new password too short
+ */
+router.patch('/change-password', authController.changePassword);
+
 module.exports = router;

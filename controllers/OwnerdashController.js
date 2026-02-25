@@ -173,18 +173,17 @@ exports.searchUsers = async (req, res) => {
 
 // GET /api/owner/recent-cash
 exports.getRecentCashDeposits = async (req, res) => {
-  const txStatus = req.query.status || 'Pending';
-  const limit = parseInt(req.query.limit) || 10;
+  const limitNum = parseInt(req.query.limit) || 10;
   try {
     const [rows] = await db.execute(
       `SELECT t.id, t.amount, t.status, t.reference, t.created_at,
               u.id AS user_id, u.first_name, u.last_name, u.phone
        FROM transactions t
        JOIN users u ON t.user_id = u.id
-       WHERE t.method = 'Cash' AND t.status = ?
+       WHERE t.method = 'Cash' AND t.status = 'Pending'
        ORDER BY t.created_at DESC
-       LIMIT ?`,
-      [txStatus, limit]
+       LIMIT ${limitNum}`,
+      []
     );
     res.status(200).json({ status: 'success', data: rows });
   } catch (error) {
@@ -252,9 +251,8 @@ exports.getPendingWithdrawals = async (req, res) => {
               u.id AS user_id, u.first_name, u.last_name, u.email, u.phone
        FROM transactions t
        JOIN users u ON t.user_id = u.id
-       WHERE t.type = 'Withdrawal' AND t.status = ?
-       ORDER BY t.created_at DESC`,
-      [txStatus]
+       WHERE t.type = 'Withdrawal' AND t.status = '${txStatus}'
+       ORDER BY t.created_at DESC`
     );
     res.status(200).json({ status: 'success', count: rows.length, data: rows });
   } catch (error) {
@@ -264,7 +262,9 @@ exports.getPendingWithdrawals = async (req, res) => {
 
 // GET /api/owner/transactions
 exports.getAllTransactions = async (req, res) => {
-  const { type, status, method, limit = 50 } = req.query;
+  const { type, method } = req.query;
+  const txStatus = req.query.status;
+  const limitNum = parseInt(req.query.limit) || 50;
   try {
     let query = `SELECT t.id, t.amount, t.type, t.method, t.status,
                         t.reference, t.created_at,
@@ -274,12 +274,11 @@ exports.getAllTransactions = async (req, res) => {
                  WHERE 1=1`;
     const params = [];
 
-    if (type)   { query += ` AND t.type = ?`;   params.push(type); }
-    if (status) { query += ` AND t.status = ?`; params.push(status); }
-    if (method) { query += ` AND t.method = ?`; params.push(method); }
+    if (type)     { query += ` AND t.type = ?`;   params.push(type); }
+    if (txStatus) { query += ` AND t.status = ?`; params.push(txStatus); }
+    if (method)   { query += ` AND t.method = ?`; params.push(method); }
 
-    query += ` ORDER BY t.created_at DESC LIMIT ?`;
-    params.push(parseInt(limit));
+    query += ` ORDER BY t.created_at DESC LIMIT ${limitNum}`;
 
     const [rows] = await db.execute(query, params);
     res.status(200).json({ status: 'success', count: rows.length, data: rows });
