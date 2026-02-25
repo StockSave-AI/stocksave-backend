@@ -2,7 +2,10 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
+// ⚠️ This must be defined before any function that uses it
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+
+// ─── DEPOSITS ────────────────────────────────────────────────────────────────
 
 // POST /api/savings/deposit
 exports.addSavings = async (req, res) => {
@@ -65,6 +68,8 @@ exports.addSavings = async (req, res) => {
   }
 };
 
+// ─── VERIFY ──────────────────────────────────────────────────────────────────
+
 // GET /api/savings/verify - Paystack redirects here after payment
 exports.verifyPaystackPayment = async (req, res) => {
   const { reference } = req.query;
@@ -112,11 +117,87 @@ exports.verifyPaystackPayment = async (req, res) => {
   }
 };
 
+// ─── WEBHOOK ─────────────────────────────────────────────────────────────────
+
 // POST /api/savings/webhook
 exports.handlePaystackWebhook = async (req, res) => {
-  console.log('Webhook received:', req.body);
+  const event = req.body;
+  console.log('Webhook received:', event.event);
+
+  // Always respond 200 immediately so Paystack knows we received it
   res.sendStatus(200);
+
+  try {
+    // Transfer completed successfully
+    if (event.event === 'transfer.success') {
+      const reference = event.data?.reference;
+      if (!reference) return;
+
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.execute(
+          `SELECT id, user_id FROM transactions 
+           WHERE reference = ? AND type = 'Withdrawal' AND status IN ('Pending', 'Processing')`,
+          [reference]
+        );
+        if (rows.length > 0) {
+          await connection.execute(
+            "UPDATE transactions SET status = 'Completed' WHERE reference = ?",
+            [reference]
+          );
+          await connection.commit();
+          console.log(`Withdrawal ${reference} marked Completed`);
+        }
+      } catch (err) {
+        await connection.rollback();
+        console.error('Webhook DB error:', err.message);
+      } finally {
+        connection.release();
+      }
+    }
+
+    // Transfer failed - refund the customer
+    if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+      const reference = event.data?.reference;
+      const amount = event.data?.amount / 100; // convert from kobo
+      if (!reference) return;
+
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.execute(
+          `SELECT id, user_id, amount FROM transactions
+           WHERE reference = ? AND type = 'Withdrawal' AND status IN ('Pending', 'Processing')`,
+          [reference]
+        );
+        if (rows.length > 0) {
+          // Mark failed
+          await connection.execute(
+            "UPDATE transactions SET status = 'Failed' WHERE reference = ?",
+            [reference]
+          );
+          // Refund balance back to user
+          await connection.execute(
+            'UPDATE users SET balance = balance + ? WHERE id = ?',
+            [rows[0].amount, rows[0].user_id]
+          );
+          await connection.commit();
+          console.log(`Withdrawal ${reference} failed - ₦${rows[0].amount} refunded to user ${rows[0].user_id}`);
+        }
+      } catch (err) {
+        await connection.rollback();
+        console.error('Webhook refund error:', err.message);
+      } finally {
+        connection.release();
+      }
+    }
+  } catch (err) {
+    console.error('Webhook handler error:', err.message);
+  }
 };
+
+// ─── HISTORY ─────────────────────────────────────────────────────────────────
 
 // GET /api/savings/history
 exports.getSavingsHistory = async (req, res) => {
@@ -149,6 +230,8 @@ exports.getRecentDeposits = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ─── OWNER ────────────────────────────────────────────────────────────────────
 
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
@@ -190,6 +273,8 @@ exports.updateDepositStatus = async (req, res) => {
     connection.release();
   }
 };
+
+// ─── REDEEM / WITHDRAW ────────────────────────────────────────────────────────
 
 // GET /api/savings/redeem
 exports.getRedeemScreen = async (req, res) => {
@@ -254,85 +339,63 @@ exports.submitWithdrawal = async (req, res) => {
   }
 
   const conn = await db.getConnection();
-  try {
-    await conn.beginTransaction();
+try {
+  await conn.beginTransaction();
 
-    const [rows] = await conn.execute(
-      'SELECT balance FROM users WHERE id = ? FOR UPDATE', [userId]
-    );
-    const user = rows[0];
+  const [rows] = await conn.execute(
+    'SELECT balance FROM users WHERE id = ? FOR UPDATE', [userId]
+  );
+  const user = rows[0];
 
-    if (!user || parseFloat(user.balance) < amount) {
-      await conn.rollback();
-      return res.status(400).json({ status: 'error', message: 'Insufficient balance' });
-    }
+  if (!user || parseFloat(user.balance) < amount) {
+    await conn.rollback();
+    return res.status(400).json({ status: 'error', message: 'Insufficient balance' });
+  }
 
+  const transferRef = `WDR-${uuidv4()}`;
+  let recipientCode = null;
+
+  if (process.env.SKIP_PAYSTACK_TRANSFER !== 'true') {
     // Step 1 - Create transfer recipient
     const recipientRes = await axios.post(
-      'https://api.paystack.co/transferrecipient',  // ← correct endpoint
+      'https://api.paystack.co/transferrecipient',
       { type: 'nuban', name: account_name, account_number, bank_code, currency: 'NGN' },
-      {
-        headers: {
-          Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`,
-          'Content-Type': 'application/json'
-        }
-      }
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`, 'Content-Type': 'application/json' } }
     );
-
-    const recipientCode = recipientRes.data.data.recipient_code;
-    const transferRef = `WDR-${uuidv4()}`;
+    recipientCode = recipientRes.data.data.recipient_code;
 
     // Step 2 - Initiate transfer
-    const transferRes = await axios.post(
-      'https://api.paystack.co/transfer',  // ← correct endpoint
-      {
-        source: 'balance',
-        amount: Math.round(amount * 100),
-        recipient: recipientCode,
-        reason: 'StockSave Withdrawal',
-        reference: transferRef
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`,
-          'Content-Type': 'application/json'
-        }
-      }
+    await axios.post(
+      'https://api.paystack.co/transfer',
+      { source: 'balance', amount: Math.round(amount * 100), recipient: recipientCode, reason: 'StockSave Withdrawal', reference: transferRef },
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`, 'Content-Type': 'application/json' } }
     );
-
-    const transferStatus = transferRes.data.data.status;
-
-    // Step 3 - Deduct balance and record
-    await conn.execute(
-      'UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]
-    );
-    await conn.execute(
-      `INSERT INTO transactions (user_id, amount, type, method, status, reference)
-       VALUES (?, ?, 'Withdrawal', 'Paystack', ?, ?)`,
-      [userId, amount, transferStatus === 'otp' ? 'Pending' : 'Processing', transferRef]
-    );
-
-    await conn.commit();
-
-    res.status(200).json({
-      success: true,
-      message: 'Withdrawal initiated successfully',
-      data: {
-        reference: transferRef,
-        new_balance: parseFloat(user.balance) - amount
-      }
-    });
-  } catch (error) {
-    await conn.rollback();
-    res.status(500).json({
-      status: 'error',
-      message: error.response?.data?.message || error.message
-    });
-  } finally {
-    conn.release();
   }
-};
 
+  // Step 3 - Deduct balance and record
+  await conn.execute(
+    'UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]
+  );
+  await conn.execute(
+    `INSERT INTO transactions (user_id, amount, type, method, status, reference, recipient_code)
+     VALUES (?, ?, 'Withdrawal', 'Paystack', 'Completed', ?, ?)`,
+    [userId, amount, transferRef, recipientCode]
+  );
+
+  await conn.commit();
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal initiated successfully',
+    data: { reference: transferRef, new_balance: parseFloat(user.balance) - amount }
+  });
+} catch (error) {
+  await conn.rollback();
+  res.status(500).json({ status: 'error', message: error.response?.data?.message || error.message });
+} finally {
+  conn.release();
+}
+};
 // GET /api/savings/balance
 exports.getBalance = async (req, res) => {
   try {
