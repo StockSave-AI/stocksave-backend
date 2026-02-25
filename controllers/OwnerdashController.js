@@ -82,11 +82,13 @@ exports.getAllUsers = async (req, res) => {
         userIds
       );
 
-      // Group transactions under each user
       usersWithTransactions = users.map(u => ({
         ...u,
         transactions: transactions.filter(t => t.user_id === u.id)
       }));
+    } else if (include_transactions === 'true' && users.length === 0) {
+      // No users found - return empty array safely
+      usersWithTransactions = [];
     }
 
     res.status(200).json({
@@ -100,6 +102,7 @@ exports.getAllUsers = async (req, res) => {
       users: usersWithTransactions
     });
   } catch (error) {
+    console.error('getAllUsers error:', error.message);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -176,7 +179,7 @@ exports.searchUsers = async (req, res) => {
 
 // GET /api/owner/recent-cash
 exports.getRecentCashDeposits = async (req, res) => {
-  const status = req.query.status || 'Pending';
+  const txStatus = req.query.status || 'Pending';
   const limit = parseInt(req.query.limit) || 10;
   try {
     const [rows] = await db.execute(
@@ -187,7 +190,7 @@ exports.getRecentCashDeposits = async (req, res) => {
        WHERE t.method = 'Cash' AND t.status = ?
        ORDER BY t.created_at DESC
        LIMIT ?`,
-      [status, limit]
+      [txStatus, limit]
     );
     res.status(200).json({ status: 'success', data: rows });
   } catch (error) {
@@ -248,7 +251,7 @@ exports.completeWithdrawal = async (req, res) => {
 
 // GET /api/owner/withdrawals
 exports.getPendingWithdrawals = async (req, res) => {
-  const { status = 'Processing' } = req.query;
+  const txStatus = req.query.status || 'Processing';
   try {
     const [rows] = await db.execute(
       `SELECT t.id, t.amount, t.status, t.reference, t.created_at,
@@ -257,7 +260,7 @@ exports.getPendingWithdrawals = async (req, res) => {
        JOIN users u ON t.user_id = u.id
        WHERE t.type = 'Withdrawal' AND t.status = ?
        ORDER BY t.created_at DESC`,
-      [status]
+      [txStatus]
     );
     res.status(200).json({ status: 'success', count: rows.length, data: rows });
   } catch (error) {
