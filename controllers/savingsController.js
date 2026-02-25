@@ -2,10 +2,7 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
-// ⚠️ This must be defined before any function that uses it
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-
-// ─── DEPOSITS ────────────────────────────────────────────────────────────────
 
 // POST /api/savings/deposit
 exports.addSavings = async (req, res) => {
@@ -117,8 +114,6 @@ exports.verifyPaystackPayment = async (req, res) => {
   }
 };
 
-// ─── WEBHOOK ─────────────────────────────────────────────────────────────────
-
 // POST /api/savings/webhook
 exports.handlePaystackWebhook = async (req, res) => {
   const event = req.body;
@@ -197,7 +192,6 @@ exports.handlePaystackWebhook = async (req, res) => {
   }
 };
 
-// ─── HISTORY ─────────────────────────────────────────────────────────────────
 
 // GET /api/savings/history
 exports.getSavingsHistory = async (req, res) => {
@@ -230,8 +224,6 @@ exports.getRecentDeposits = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-// ─── OWNER ────────────────────────────────────────────────────────────────────
 
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
@@ -274,7 +266,6 @@ exports.updateDepositStatus = async (req, res) => {
   }
 };
 
-// ─── REDEEM / WITHDRAW ────────────────────────────────────────────────────────
 
 // GET /api/savings/redeem
 exports.getRedeemScreen = async (req, res) => {
