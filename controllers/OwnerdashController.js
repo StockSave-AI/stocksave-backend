@@ -37,11 +37,13 @@ exports.getDashboardStats = async (req, res) => {
 
 // GET /api/owner/users - All customers with transactions and pagination
 exports.getAllUsers = async (req, res) => {
-  const { q, status, page = 1, limit = 20, include_transactions } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { q, page = 1, limit = 20, include_transactions } = req.query;
+  const userStatus = req.query.status;
+  const pageNum = parseInt(page);
+  const limitNum = parseInt(limit);
+  const offset = (pageNum - 1) * limitNum;
 
   try {
-    // Build dynamic query
     let where = `WHERE account_type = 'Customer'`;
     const params = [];
 
@@ -49,57 +51,49 @@ exports.getAllUsers = async (req, res) => {
       where += ` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ?)`;
       params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
     }
-    if (status) {
+    if (userStatus) {
       where += ` AND status = ?`;
-      params.push(status);
+      params.push(userStatus);
     }
 
-    // Total count for pagination
     const [[{ total }]] = await db.execute(
       `SELECT COUNT(*) AS total FROM users ${where}`, params
     );
 
-    // Fetch users
     const [users] = await db.execute(
       `SELECT id, first_name, last_name, email, phone, status, balance, created_at
        FROM users ${where}
        ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
+       LIMIT ${limitNum} OFFSET ${offset}`,
+      params
     );
 
-    // Optionally attach transactions for each user
-    let usersWithTransactions = users;
+    let result = users;
+
     if (include_transactions === 'true' && users.length > 0) {
       const userIds = users.map(u => u.id);
       const placeholders = userIds.map(() => '?').join(',');
-
       const [transactions] = await db.execute(
         `SELECT id, user_id, amount, type, method, status, reference, created_at
-         FROM transactions
-         WHERE user_id IN (${placeholders})
+         FROM transactions WHERE user_id IN (${placeholders})
          ORDER BY created_at DESC`,
         userIds
       );
-
-      usersWithTransactions = users.map(u => ({
+      result = users.map(u => ({
         ...u,
         transactions: transactions.filter(t => t.user_id === u.id)
       }));
-    } else if (include_transactions === 'true' && users.length === 0) {
-      // No users found - return empty array safely
-      usersWithTransactions = [];
     }
 
     res.status(200).json({
       status: 'success',
       pagination: {
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total_pages: Math.ceil(total / parseInt(limit))
+        page: pageNum,
+        limit: limitNum,
+        total_pages: Math.ceil(total / limitNum)
       },
-      users: usersWithTransactions
+      users: result
     });
   } catch (error) {
     console.error('getAllUsers error:', error.message);
