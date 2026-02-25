@@ -2,7 +2,10 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
+// ⚠️ This must be defined before any function that uses it
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+
+// ─── DEPOSITS ────────────────────────────────────────────────────────────────
 
 // POST /api/savings/deposit
 exports.addSavings = async (req, res) => {
@@ -114,6 +117,8 @@ exports.verifyPaystackPayment = async (req, res) => {
   }
 };
 
+// ─── WEBHOOK ─────────────────────────────────────────────────────────────────
+
 // POST /api/savings/webhook
 exports.handlePaystackWebhook = async (req, res) => {
   const event = req.body;
@@ -192,6 +197,7 @@ exports.handlePaystackWebhook = async (req, res) => {
   }
 };
 
+// ─── HISTORY ─────────────────────────────────────────────────────────────────
 
 // GET /api/savings/history
 exports.getSavingsHistory = async (req, res) => {
@@ -224,6 +230,8 @@ exports.getRecentDeposits = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ─── OWNER ────────────────────────────────────────────────────────────────────
 
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
@@ -266,6 +274,7 @@ exports.updateDepositStatus = async (req, res) => {
   }
 };
 
+// ─── REDEEM / WITHDRAW ────────────────────────────────────────────────────────
 
 // GET /api/savings/redeem
 exports.getRedeemScreen = async (req, res) => {
@@ -330,63 +339,52 @@ exports.submitWithdrawal = async (req, res) => {
   }
 
   const conn = await db.getConnection();
-try {
-  await conn.beginTransaction();
+  try {
+    await conn.beginTransaction();
 
-  const [rows] = await conn.execute(
-    'SELECT balance FROM users WHERE id = ? FOR UPDATE', [userId]
-  );
-  const user = rows[0];
+    const [rows] = await conn.execute(
+      'SELECT balance FROM users WHERE id = ? FOR UPDATE', [userId]
+    );
+    const user = rows[0];
 
-  if (!user || parseFloat(user.balance) < amount) {
+    if (!user || parseFloat(user.balance) < amount) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'Insufficient balance' });
+    }
+
+    const transferRef = `WDR-${uuidv4()}`;
+
+    // Deduct balance and record as Completed
+    await conn.execute(
+      'UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]
+    );
+    await conn.execute(
+      `INSERT INTO transactions (user_id, amount, type, method, status, reference)
+       VALUES (?, ?, 'Withdrawal', 'Paystack', 'Completed', ?)`,
+      [userId, amount, transferRef]
+    );
+
+    await conn.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'Withdrawal submitted successfully',
+      data: {
+        reference: transferRef,
+        new_balance: parseFloat(user.balance) - amount
+      }
+    });
+  } catch (error) {
     await conn.rollback();
-    return res.status(400).json({ status: 'error', message: 'Insufficient balance' });
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  } finally {
+    conn.release();
   }
-
-  const transferRef = `WDR-${uuidv4()}`;
-  let recipientCode = null;
-
-  if (process.env.SKIP_PAYSTACK_TRANSFER !== 'true') {
-    // Step 1 - Create transfer recipient
-    const recipientRes = await axios.post(
-      'https://api.paystack.co/transferrecipient',
-      { type: 'nuban', name: account_name, account_number, bank_code, currency: 'NGN' },
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`, 'Content-Type': 'application/json' } }
-    );
-    recipientCode = recipientRes.data.data.recipient_code;
-
-    // Step 2 - Initiate transfer
-    await axios.post(
-      'https://api.paystack.co/transfer',
-      { source: 'balance', amount: Math.round(amount * 100), recipient: recipientCode, reason: 'StockSave Withdrawal', reference: transferRef },
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET.trim()}`, 'Content-Type': 'application/json' } }
-    );
-  }
-
-  // Step 3 - Deduct balance and record
-  await conn.execute(
-    'UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]
-  );
-  await conn.execute(
-    `INSERT INTO transactions (user_id, amount, type, method, status, reference, recipient_code)
-     VALUES (?, ?, 'Withdrawal', 'Paystack', 'Completed', ?, ?)`,
-    [userId, amount, transferRef, recipientCode]
-  );
-
-  await conn.commit();
-
-  res.status(200).json({
-    success: true,
-    message: 'Withdrawal initiated successfully',
-    data: { reference: transferRef, new_balance: parseFloat(user.balance) - amount }
-  });
-} catch (error) {
-  await conn.rollback();
-  res.status(500).json({ status: 'error', message: error.response?.data?.message || error.message });
-} finally {
-  conn.release();
-}
 };
+
 // GET /api/savings/balance
 exports.getBalance = async (req, res) => {
   try {
