@@ -2,10 +2,8 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
-// ⚠️ This must be defined before any function that uses it
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 
-// ─── DEPOSITS ────────────────────────────────────────────────────────────────
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 
 // POST /api/savings/deposit
 exports.addSavings = async (req, res) => {
@@ -30,12 +28,13 @@ exports.addSavings = async (req, res) => {
     );
 
     if (method === 'Paystack') {
+      const FRONTEND = process.env.FRONTEND_URL || 'https://stocksave.vercel.app';
       const paystackResponse = await axios.post(
         'https://api.paystack.co/transaction/initialize',
         {
           email,
           amount: Math.round(amount * 100),
-          callback_url: process.env.PAYSTACK_CALLBACK_URL || 'https://auth-signup.onrender.com/api/savings/verify',
+          callback_url: `${FRONTEND}/dashboard?reference=${trxRef}&payment=success`,
           reference: trxRef
         },
         {
@@ -68,12 +67,10 @@ exports.addSavings = async (req, res) => {
   }
 };
 
-// ─── VERIFY ──────────────────────────────────────────────────────────────────
-
-// GET /api/savings/verify - Paystack redirects here after payment
+// GET /api/savings/verify - called by frontend after Paystack redirect
 exports.verifyPaystackPayment = async (req, res) => {
   const { reference } = req.query;
-  if (!reference) return res.status(400).json({ error: 'No reference provided' });
+  if (!reference) return res.status(400).json({ success: false, message: 'No reference provided' });
 
   const connection = await db.getConnection();
   try {
@@ -82,36 +79,69 @@ exports.verifyPaystackPayment = async (req, res) => {
       { headers: { Authorization: `Bearer ${PAYSTACK_SECRET.trim()}` } }
     );
 
-    const FRONTEND = process.env.FRONTEND_URL || 'https://stocksave.vercel.app';
-
-    if (response.data.data.status === 'success') {
-      await connection.beginTransaction();
-
-      const [rows] = await connection.execute(
-        'SELECT status, user_id, amount FROM transactions WHERE reference = ? FOR UPDATE',
-        [reference]
-      );
-
-      if (rows.length > 0 && rows[0].status === 'Pending') {
-        const amount = parseFloat(rows[0].amount);
-        await connection.execute(
-          "UPDATE transactions SET status = 'Completed' WHERE reference = ?", [reference]
-        );
-        await connection.execute(
-          'UPDATE users SET balance = balance + ? WHERE id = ?',
-          [amount, rows[0].user_id]
-        );
-        await connection.commit();
-        return res.redirect(`${FRONTEND}/dashboard?payment=success&reference=${reference}`);
-      }
-
-      return res.redirect(`${FRONTEND}/dashboard?payment=already_processed`);
+    if (response.data.data.status !== 'success') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment was not successful',
+        data: { status: response.data.data.status, reference }
+      });
     }
 
-    res.redirect(`${FRONTEND}/dashboard?payment=failed`);
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      'SELECT status, user_id, amount FROM transactions WHERE reference = ? FOR UPDATE',
+      [reference]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Transaction not found', data: { reference } });
+    }
+
+    const tx = rows[0];
+
+    // Already processed — idempotent, return success safely
+    if (tx.status === 'Completed') {
+      const [[user]] = await connection.execute(
+        'SELECT balance FROM users WHERE id = ?', [tx.user_id]
+      );
+      await connection.rollback();
+      return res.status(200).json({
+        success: true,
+        message: 'Payment already verified',
+        data: { status: 'Completed', reference, new_balance: parseFloat(user.balance) }
+      });
+    }
+
+    // First time — mark completed and credit balance
+    const amount = parseFloat(tx.amount);
+    await connection.execute(
+      "UPDATE transactions SET status = 'Completed' WHERE reference = ?", [reference]
+    );
+    await connection.execute(
+      'UPDATE users SET balance = balance + ? WHERE id = ?', [amount, tx.user_id]
+    );
+
+    const [[updatedUser]] = await connection.execute(
+      'SELECT balance FROM users WHERE id = ?', [tx.user_id]
+    );
+
+    await connection.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment verified successfully',
+      data: {
+        status: 'Completed',
+        reference,
+        amount,
+        new_balance: parseFloat(updatedUser.balance)
+      }
+    });
   } catch (error) {
     await connection.rollback();
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   } finally {
     connection.release();
   }
@@ -197,8 +227,6 @@ exports.handlePaystackWebhook = async (req, res) => {
   }
 };
 
-// ─── HISTORY ─────────────────────────────────────────────────────────────────
-
 // GET /api/savings/history
 exports.getSavingsHistory = async (req, res) => {
   try {
@@ -230,8 +258,6 @@ exports.getRecentDeposits = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-// ─── OWNER ────────────────────────────────────────────────────────────────────
 
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
@@ -274,7 +300,6 @@ exports.updateDepositStatus = async (req, res) => {
   }
 };
 
-// ─── REDEEM / WITHDRAW ────────────────────────────────────────────────────────
 
 // GET /api/savings/redeem
 exports.getRedeemScreen = async (req, res) => {
