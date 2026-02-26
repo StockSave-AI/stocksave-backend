@@ -1,9 +1,9 @@
 exports.validatePassword = (password) => {
-  const minLength = 16;
+  const minLength = 10;
   const regex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).+$/;
 
   if (password.length < minLength) {
-    return "Password must be at least 16 characters long.";
+    return "Password must be at least 10 characters long.";
   }
 
   if (!regex.test(password)) {

@@ -9,9 +9,10 @@ const { authenticate, authorize } = require('../middleware/authMiddleware');
  *   schemas:
  *     UserSignup:
  *       type: object
- *       required: [full_name, email, phone, password, security_question, security_answer, account_type]
+ *       required: [first_name, last_name, email, phone, password, account_type]
  *       properties:
- *         full_name: { type: string, example: "John Doe" }
+ *         first_name: { type: string, example: "Jane" }
+ *         last_name: { type: string, example: "Doe" }
  *         email: { type: string, example: "john@example.com" }
  *         phone: { type: string, example: "+1234567890" }
  *         password: { type: string, example: "StrongPass123!" }
@@ -66,28 +67,22 @@ router.post('/signup', authController.signup);
  */
 router.post('/login', authController.login);
 
+
 /**
  * @swagger
- * /api/auth/profile:
+ * /api/auth/account-summary:
  *   get:
- *     summary: Get current user profile and account summary
+ *     summary: Get current user account details
  *     tags: [Auth]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Profile data retrieved
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 full_name: { type: string }
- *                 balance: { type: number }
- *                 account_type: { type: string }
- *                 created_at: { type: string }
+ *         description: Account summary retrieved successfully
  */
-router.get('/profile', authenticate, authController.getAccountSummary);
+// Use 'authenticate' to ensure the request has a valid JWT
+router.get('/account-summary', authenticate, authController.getAccountSummary);
+
 
 /**
  * @swagger
@@ -125,7 +120,7 @@ router.post('/forgot-password', authController.requestPasswordReset);
  *             properties:
  *               phone: { type: string, example: "+2348012345678" }
  *               otp: { type: string, example: "123456" }
- *               newPassword: { type: string, example: "NewSecurePass123!" }
+ *               newPassword: { type: string, example: "SecurePass123!" }
  *     responses:
  *       200:
  *         description: Password updated successfully
