@@ -2,8 +2,9 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
-
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+
+// ─── DEPOSITS ────────────────────────────────────────────────────────────────
 
 // POST /api/savings/deposit
 exports.addSavings = async (req, res) => {
@@ -66,6 +67,7 @@ exports.addSavings = async (req, res) => {
     connection.release();
   }
 };
+
 
 // GET /api/savings/verify - called by frontend after Paystack redirect
 exports.verifyPaystackPayment = async (req, res) => {
@@ -146,8 +148,6 @@ exports.verifyPaystackPayment = async (req, res) => {
     connection.release();
   }
 };
-
-// ─── WEBHOOK ─────────────────────────────────────────────────────────────────
 
 // POST /api/savings/webhook
 exports.handlePaystackWebhook = async (req, res) => {
@@ -259,6 +259,7 @@ exports.getRecentDeposits = async (req, res) => {
   }
 };
 
+
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
   if (req.user.account_type !== 'Owner') {
@@ -287,6 +288,22 @@ exports.updateDepositStatus = async (req, res) => {
       await connection.execute(
         'UPDATE users SET balance = balance + ? WHERE id = ?',
         [rows[0].amount, rows[0].user_id]
+      );
+      // Notify customer
+      const amount = parseFloat(rows[0].amount).toLocaleString('en-NG');
+      await connection.execute(
+        `INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type)
+         VALUES (?, 'deposit_confirmed', 'Deposit Confirmed', ?, ?, 'transaction')`,
+        [rows[0].user_id, `Your deposit of ₦${amount} has been confirmed and credited to your balance.`, transactionId]
+      );
+    }
+
+    if (status === 'Failed') {
+      const amount = parseFloat(rows[0].amount).toLocaleString('en-NG');
+      await connection.execute(
+        `INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type)
+         VALUES (?, 'general', 'Deposit Failed', ?, ?, 'transaction')`,
+        [rows[0].user_id, `Your deposit of ₦${amount} could not be confirmed. Please contact support.`, transactionId]
       );
     }
 
