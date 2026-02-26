@@ -1,6 +1,8 @@
 const db     = require('../configs/connect');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
+
+// ─── MULTER — memory storage, convert to base64 ───────────────────────────────
 const storage = multer.memoryStorage();
 const fileFilter = (req, file, cb) => {
   if (file.mimetype.startsWith('image/')) cb(null, true);
@@ -8,15 +10,13 @@ const fileFilter = (req, file, cb) => {
 };
 const upload = multer({ storage, fileFilter, limits: { fileSize: 2 * 1024 * 1024 } });
 
-// Export multer middleware so routes can use it
-exports.uploadProfilePicture  = upload.single('profile_picture');
-exports.uploadBusinessLogo    = upload.single('business_logo');
-exports.uploadBoth            = upload.fields([
+exports.uploadProfilePicture = upload.single('profile_picture');
+exports.uploadBusinessLogo   = upload.single('business_logo');
+exports.uploadBoth           = upload.fields([
   { name: 'profile_picture', maxCount: 1 },
   { name: 'business_logo',   maxCount: 1 }
 ]);
 
-// Helper: convert buffer to base64 data URI
 const toBase64 = (file) =>
   `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
 
@@ -47,31 +47,22 @@ exports.getProfile = async (req, res) => {
 };
 
 // ─── PATCH /api/settings/profile ─────────────────────────────────────────────
-// Handles multipart/form-data (file uploads) AND plain JSON
-// Customer fields: first_name, last_name, phone, profile_picture (file)
-// Owner adds:      business_name, business_description, business_phone, business_logo (file)
 exports.updateProfile = async (req, res) => {
-  const {
-    first_name, last_name, phone,
-    business_name, business_phone, business_description
-  } = req.body;
+  const { first_name, last_name, phone, business_name, business_phone, business_description } = req.body;
 
   try {
     // ── Personal fields ──────────────────────────────────────────────────────
     const userFields = [];
     const userParams = [];
 
-    if (first_name !== undefined)  { userFields.push('first_name = ?');  userParams.push(first_name); }
-    if (last_name  !== undefined)  { userFields.push('last_name = ?');   userParams.push(last_name); }
-    if (phone      !== undefined)  { userFields.push('phone = ?');       userParams.push(phone); }
+    if (first_name !== undefined) { userFields.push('first_name = ?'); userParams.push(first_name); }
+    if (last_name  !== undefined) { userFields.push('last_name = ?');  userParams.push(last_name); }
+    if (phone      !== undefined) { userFields.push('phone = ?');      userParams.push(phone); }
 
-    // Profile picture — from file upload or plain string URL
+    // Profile picture — file upload takes priority over string value
     if (req.files?.profile_picture?.[0]) {
       userFields.push('profile_picture = ?');
       userParams.push(toBase64(req.files.profile_picture[0]));
-    } else if (req.file && req.file.fieldname === 'profile_picture') {
-      userFields.push('profile_picture = ?');
-      userParams.push(toBase64(req.file));
     } else if (req.body.profile_picture !== undefined) {
       userFields.push('profile_picture = ?');
       userParams.push(req.body.profile_picture);
@@ -79,18 +70,13 @@ exports.updateProfile = async (req, res) => {
 
     if (userFields.length > 0) {
       userParams.push(req.user.id);
-      await db.execute(
-        `UPDATE users SET ${userFields.join(', ')} WHERE id = ?`, userParams
-      );
+      await db.execute(`UPDATE users SET ${userFields.join(', ')} WHERE id = ?`, userParams);
     }
 
     // ── Business fields (Owner only) ─────────────────────────────────────────
     if (req.user.account_type === 'Owner') {
-      const hasBizText = business_name !== undefined ||
-                         business_phone !== undefined ||
-                         business_description !== undefined;
-      const hasLogo    = req.files?.business_logo?.[0] ||
-                         req.body.business_logo !== undefined;
+      const hasBizText = business_name !== undefined || business_phone !== undefined || business_description !== undefined;
+      const hasLogo    = req.files?.business_logo?.[0] || req.body.business_logo !== undefined;
 
       if (hasBizText || hasLogo) {
         let logoValue = null;
@@ -109,7 +95,7 @@ exports.updateProfile = async (req, res) => {
              business_phone       = COALESCE(VALUES(business_phone),       business_phone),
              business_logo        = COALESCE(VALUES(business_logo),        business_logo),
              business_description = COALESCE(VALUES(business_description), business_description)`,
-          [req.user.id, business_name, business_phone, logoValue, business_description]
+          [req.user.id, business_name || null, business_phone || null, logoValue, business_description || null]
         );
       }
     }
@@ -123,7 +109,6 @@ exports.updateProfile = async (req, res) => {
     );
 
     let data = { ...updated[0] };
-
     if (req.user.account_type === 'Owner') {
       const [biz] = await db.execute(
         'SELECT * FROM business_settings WHERE user_id = ?', [req.user.id]
@@ -147,7 +132,6 @@ exports.changePassword = async (req, res) => {
   if (new_password.length < 8) {
     return res.status(400).json({ message: 'New password must be at least 8 characters' });
   }
-  // Optional confirm check if frontend sends it
   if (confirm_password && new_password !== confirm_password) {
     return res.status(400).json({ message: 'Passwords do not match' });
   }
@@ -162,9 +146,7 @@ exports.changePassword = async (req, res) => {
     if (!valid) return res.status(400).json({ message: 'Current password is incorrect' });
 
     const hashed = await bcrypt.hash(new_password, 12);
-    await db.execute(
-      'UPDATE users SET password_hash = ? WHERE id = ?', [hashed, req.user.id]
-    );
+    await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, req.user.id]);
 
     res.status(200).json({ status: 'success', message: 'Password updated successfully' });
   } catch (error) {
@@ -172,74 +154,26 @@ exports.changePassword = async (req, res) => {
   }
 };
 
-// ─── GET /api/settings/notifications ─────────────────────────────────────────
-// Returns the 5 toggle states shown on the notifications screen
-exports.getNotificationPrefs = async (req, res) => {
-  try {
-    const [rows] = await db.execute(
-      `SELECT payment_reminders, booking_updates
-       FROM users WHERE id = ?`,
-      [req.user.id]
-    );
-    res.status(200).json({ status: 'success', data: rows[0] });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ─── PATCH /api/settings/notifications ───────────────────────────────────────
-// Toggles: payment_reminders, booking_updates (Stock Alerts + Redemption Updates)
-exports.updateNotificationPrefs = async (req, res) => {
-  const { payment_reminders, booking_updates } = req.body;
-
-  try {
-    const fields = [];
-    const params = [];
-
-    if (payment_reminders !== undefined) { fields.push('payment_reminders = ?'); params.push(payment_reminders ? 1 : 0); }
-    if (booking_updates   !== undefined) { fields.push('booking_updates = ?');   params.push(booking_updates   ? 1 : 0); }
-
-    if (fields.length === 0) {
-      return res.status(400).json({ message: 'No preferences provided' });
-    }
-
-    params.push(req.user.id);
-    await db.execute(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, params);
-
-    const [updated] = await db.execute(
-      `SELECT payment_reminders, booking_updates FROM users WHERE id = ?`,
-      [req.user.id]
-    );
-
-    res.status(200).json({ status: 'success', message: 'Preferences updated', data: updated[0] });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ─── GET /api/settings/business ──────────────────────────────────────────────
+// ─── GET /api/settings/business (Owner only) ─────────────────────────────────
 exports.getBusinessSettings = async (req, res) => {
   try {
     const [rows] = await db.execute(
       'SELECT * FROM business_settings WHERE user_id = ?', [req.user.id]
     );
-    res.status(200).json({
-      status: 'success',
-      data: rows[0] || {}
-    });
+    res.status(200).json({ status: 'success', data: rows[0] || {} });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// ─── PATCH /api/settings/user-status/:id ─────────────────────────────────────
+// ─── PATCH /api/settings/user-status/:id (Owner only) ────────────────────────
 exports.updateUserStatus = async (req, res) => {
-  const { id } = req.params;
+  const { id }     = req.params;
   const { status } = req.body;
 
   const validStatuses = ['Active', 'Suspended', 'Deactivated'];
   if (!validStatuses.includes(status)) {
-    return res.status(400).json({ message: `status must be: ${validStatuses.join(', ')}` });
+    return res.status(400).json({ message: `status must be one of: ${validStatuses.join(', ')}` });
   }
 
   try {
