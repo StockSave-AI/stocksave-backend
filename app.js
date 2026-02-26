@@ -13,7 +13,8 @@ const ownerRoutes = require('./routes/ownerRoutes');
 const planRoutes = require('./routes/planRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const customerNotifRoutes = require('./routes/customernotifRoutes');
-
+const analyticsRoute = require('./routes/analyticsRoute');
+const settingsRoute      = require('./routes/settingsRoute');
 
 const app = express();
 
@@ -89,7 +90,9 @@ app.use('/api/savings', savingsRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/customer/notifications', customerNotifRoutes);
 app.use('/api/customer', customerRoutes);
+app.use('/api/analytics', analyticsRoute);
 
+app.use('/api/settings', settingsRoute); 
 // Swagger UI Route
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
