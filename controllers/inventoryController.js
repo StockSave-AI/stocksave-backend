@@ -353,7 +353,7 @@ exports.updateBookingStatus = async (req, res) => {
         // Record refund transaction
         await connection.execute(
           `INSERT INTO transactions (user_id, amount, type, method, status)
-           VALUES (?, ?, 'Deposit', 'Paystack', 'Completed')`,
+           VALUES (?, ?, 'Refund', 'Paystack', 'Completed')`,
           [current.user_id, refundAmount]
         );
       }
@@ -364,6 +364,21 @@ exports.updateBookingStatus = async (req, res) => {
       'UPDATE inventory_allocations SET status = ? WHERE id = ?',
       [status, id]
     );
+
+    // Notify customer
+    const notifMessages = {
+      Completed: { title: 'Order Ready for Pickup', type: 'booking_update', message: `Your booking for ${invRows.length > 0 ? 'your item' : 'an item'} is ready for pickup.` },
+      Cancelled: { title: 'Booking Cancelled', type: 'booking_update', message: `Your booking has been cancelled and ₦${refundAmount ? parseFloat(refundAmount).toLocaleString('en-NG') : '0'} has been refunded to your balance.` }
+    };
+
+    if (notifMessages[status]) {
+      const n = notifMessages[status];
+      await connection.execute(
+        `INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type)
+         VALUES (?, ?, ?, ?, ?, 'booking')`,
+        [current.user_id, n.type, n.title, n.message, id]
+      );
+    }
 
     await connection.commit();
 
@@ -405,6 +420,32 @@ exports.addInventory = async (req, res) => {
        VALUES (?, ?, ?)`,
       [product_variant_id, total_slots, total_slots]
     );
+
+    // Get product name to use in notification
+    const [productRows] = await connection.execute(
+      `SELECT fp.product_name, pv.size_label, pv.price
+       FROM product_variants pv
+       JOIN food_products fp ON pv.product_id = fp.id
+       WHERE pv.id = ?`,
+      [product_variant_id]
+    );
+
+    // Broadcast stock alert to all active customers
+    if (productRows.length > 0) {
+      const { product_name, size_label, price } = productRows[0];
+      const formattedPrice = parseFloat(price).toLocaleString('en-NG');
+      const [customers] = await connection.execute(
+        `SELECT id FROM users WHERE account_type = 'Customer' AND status = 'Active'`
+      );
+      if (customers.length > 0) {
+        const values = customers.map(c =>
+          `(${c.id}, 'stock_alert', 'New Stock Available', '${product_name} (${size_label}) is now available. Book your slot for ₦${formattedPrice}.', ${result.insertId}, 'stock')`
+        ).join(',');
+        await connection.execute(
+          `INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type) VALUES ${values}`
+        );
+      }
+    }
 
     await connection.commit();
 

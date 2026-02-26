@@ -1,6 +1,5 @@
 const db = require('../configs/connect');
 
-// DS4-1: Match user booking to available stock batches (FIFO order)
 exports.matchStockToBooking = async (req, res) => {
   const { variantId } = req.params;
   try {
@@ -36,7 +35,7 @@ exports.matchStockToBooking = async (req, res) => {
 };
 
 // ─── GET /api/notifications/low-stock ─────────────────────
-// DS4-2: Products with total stock below threshold (default 10)
+
 exports.getLowStockAlerts = async (req, res) => {
   const threshold = parseInt(req.query.threshold) || 10;
   try {
@@ -50,9 +49,8 @@ exports.getLowStockAlerts = async (req, res) => {
        JOIN product_variants pv ON se.product_variant_id = pv.id
        JOIN food_products fp ON pv.product_id = fp.id
        GROUP BY se.product_variant_id, fp.product_name, pv.size_label
-       HAVING total_stock < ?
-       ORDER BY total_stock ASC`,
-      [threshold]
+       HAVING total_stock < ${threshold}
+       ORDER BY total_stock ASC`
     );
 
     res.status(200).json({
@@ -139,6 +137,7 @@ exports.getReconciliation = async (req, res) => {
     const [[summary]] = await db.execute(
       `SELECT
         SUM(CASE WHEN type = 'Deposit'      AND status = 'Completed' THEN amount ELSE 0 END) AS total_deposits,
+        SUM(CASE WHEN type = 'Refund'       AND status = 'Completed' THEN amount ELSE 0 END) AS total_refunds,
         SUM(CASE WHEN type = 'Withdrawal'   AND status IN ('Completed', 'Processing') THEN amount ELSE 0 END) AS total_withdrawals,
         SUM(CASE WHEN type = 'Booking_Hold' AND status = 'Completed' THEN amount ELSE 0 END) AS total_booking_holds,
         SUM(CASE WHEN status = 'Pending' AND type = 'Deposit'    THEN amount ELSE 0 END) AS total_pending_deposits,
@@ -153,6 +152,7 @@ exports.getReconciliation = async (req, res) => {
       status: 'success',
       data: {
         total_deposits: parseFloat(summary.total_deposits) || 0,
+        total_refunds: parseFloat(summary.total_refunds) || 0,
         total_withdrawals: parseFloat(summary.total_withdrawals) || 0,
         total_booking_holds: parseFloat(summary.total_booking_holds) || 0,
         total_pending: parseFloat(summary.total_pending) || 0,
@@ -171,7 +171,7 @@ exports.getReconciliation = async (req, res) => {
 // Returns customers who signed up recently
 exports.getNewUsers = async (req, res) => {
   const days = parseInt(req.query.days) || 7;
-  const limit = parseInt(req.query.limit) || 20;
+  const limitNum = parseInt(req.query.limit) || 20;
 
   try {
     const [users] = await db.execute(
@@ -181,10 +181,9 @@ exports.getNewUsers = async (req, res) => {
         TIMESTAMPDIFF(HOUR, created_at, NOW()) AS hours_since_signup
        FROM users
        WHERE account_type = 'Customer'
-       AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+       AND created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)
        ORDER BY created_at DESC
-       LIMIT ?`,
-      [days, limit]
+       LIMIT ${limitNum}`
     );
 
     res.status(200).json({
