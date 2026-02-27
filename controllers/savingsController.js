@@ -2,6 +2,7 @@ const db = require('../configs/connect');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
+// ⚠️ This must be defined before any function that uses it
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 
 // ─── DEPOSITS ────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ exports.addSavings = async (req, res) => {
   }
 };
 
+// ─── VERIFY ──────────────────────────────────────────────────────────────────
 
 // GET /api/savings/verify - called by frontend after Paystack redirect
 exports.verifyPaystackPayment = async (req, res) => {
@@ -149,6 +151,8 @@ exports.verifyPaystackPayment = async (req, res) => {
   }
 };
 
+// ─── WEBHOOK ─────────────────────────────────────────────────────────────────
+
 // POST /api/savings/webhook
 exports.handlePaystackWebhook = async (req, res) => {
   const event = req.body;
@@ -227,6 +231,8 @@ exports.handlePaystackWebhook = async (req, res) => {
   }
 };
 
+// ─── HISTORY ─────────────────────────────────────────────────────────────────
+
 // GET /api/savings/history
 exports.getSavingsHistory = async (req, res) => {
   try {
@@ -259,6 +265,7 @@ exports.getRecentDeposits = async (req, res) => {
   }
 };
 
+// ─── OWNER ────────────────────────────────────────────────────────────────────
 
 // PATCH /api/savings/update-status (Owner only)
 exports.updateDepositStatus = async (req, res) => {
@@ -317,6 +324,7 @@ exports.updateDepositStatus = async (req, res) => {
   }
 };
 
+// ─── REDEEM / WITHDRAW ────────────────────────────────────────────────────────
 
 // GET /api/savings/redeem
 exports.getRedeemScreen = async (req, res) => {
@@ -407,6 +415,28 @@ exports.submitWithdrawal = async (req, res) => {
     );
 
     await conn.commit();
+
+    // Notify all active owners about the withdrawal
+    try {
+      const [userInfo] = await db.execute(
+        'SELECT first_name, last_name FROM users WHERE id = ?', [userId]
+      );
+      const [owners] = await db.execute(
+        `SELECT id FROM users WHERE account_type = 'Owner' AND status = 'Active'`
+      );
+      if (owners.length > 0 && userInfo.length > 0) {
+        const { first_name, last_name } = userInfo[0];
+        const formattedAmount = parseFloat(amount).toLocaleString('en-NG');
+        const values = owners.map(o =>
+          `(${o.id}, 'withdrawal_alert', 'New Withdrawal Request', '${first_name} ${last_name} withdrew \u20a6${formattedAmount}. Reference: ${transferRef}.', ${userId}, 'user')`
+        ).join(',');
+        await db.execute(
+          `INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type) VALUES ${values}`
+        );
+      }
+    } catch (notifErr) {
+      console.error('Withdrawal notification error:', notifErr.message);
+    }
 
     res.status(200).json({
       success: true,

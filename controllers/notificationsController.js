@@ -30,6 +30,11 @@ exports.getAlertSummary = async (req, res) => {
       `SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND is_read = 0`, [userId]
     );
 
+    // Withdrawal alerts count for this owner (stored notifications)
+    const [[withdrawalAlerts]] = await db.execute(
+      `SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND type = 'withdrawal_alert' AND is_read = 0`, [userId]
+    );
+
     res.status(200).json({
       status: 'success',
       data: {
@@ -37,8 +42,9 @@ exports.getAlertSummary = async (req, res) => {
         fully_booked_products: fullyBooked.count,
         pending_payments: pendingPayments.count,
         new_signups: newUsers.count,
+        withdrawal_alerts: withdrawalAlerts.count,
         unread_notifications: unread.count,
-        total_alerts: lowStock.count + fullyBooked.count + pendingPayments.count + newUsers.count
+        total_alerts: lowStock.count + fullyBooked.count + pendingPayments.count + newUsers.count + withdrawalAlerts.count
       }
     });
   } catch (error) {
@@ -248,6 +254,48 @@ exports.matchStockToBooking = async (req, res) => {
   }
 };
 
+
+// ─── GET /api/notifications/withdrawals ──────────────────────────────────────
+// Shortcut for withdrawal_alert tab on owner notifications screen
+exports.getWithdrawalAlerts = async (req, res) => {
+  const userId   = req.user.id;
+  const limitNum = parseInt(req.query.limit) || 20;
+  const page     = parseInt(req.query.page)  || 1;
+  const offset   = (page - 1) * limitNum;
+
+  try {
+    const [[{ total }]] = await db.execute(
+      `SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND type = 'withdrawal_alert'`, [userId]
+    );
+
+    const [rows] = await db.execute(
+      `SELECT id, type, title, message, is_read, reference_id, reference_type, created_at
+       FROM notifications
+       WHERE user_id = ? AND type = 'withdrawal_alert'
+       ORDER BY created_at DESC
+       LIMIT ${limitNum} OFFSET ${offset}`,
+      [userId]
+    );
+
+    const [[unreadRow]] = await db.execute(
+      `SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND type = 'withdrawal_alert' AND is_read = 0`, [userId]
+    );
+    const [[weekRow]] = await db.execute(
+      `SELECT COUNT(*) AS count FROM notifications
+       WHERE user_id = ? AND type = 'withdrawal_alert'
+       AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`, [userId]
+    );
+
+    res.status(200).json({
+      status: 'success',
+      stats: { unread: unreadRow.count, this_week: weekRow.count, total },
+      pagination: { page, limit: limitNum, total, total_pages: Math.ceil(total / limitNum) },
+      data: rows
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
 // ─── PATCH /api/notifications/mark-all ───────────────────────────────────────
 exports.markAllAsRead = async (req, res) => {
   const userId = req.user.id;
